@@ -27,9 +27,19 @@ async function getChatReply(message, userId) {
     return reply;
 
   } catch (error) {
-    console.error('❌ DeepSeek 回應失敗:', error.response?.data || error.message);
-    return '抱歉，我目前無法回應你的問題。';
-  }
+  console.error('DeepSeek 回應失敗:', error.response?.data || error.message);
+
+  const fallbackReplies = [
+    "我剛剛有點失神了，但我還在這裡。",
+    "我暫時連不到思緒的深處，你可以再跟我說一次嗎？",
+    "我還在整理剛才的訊息，你願意再告訴我一次嗎？",
+    "我在聽，只是剛剛有點卡住了。",
+    "你說的事情對你很重要，我還在這裡陪你。"
+  ];
+
+  const randomReply = fallbackReplies[Math.floor(Math.random() * fallbackReplies.length)];
+  return randomReply;
+}
 }
 
 module.exports = {
