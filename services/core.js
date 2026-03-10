@@ -67,7 +67,6 @@ async function getChatReply(message, userId) {
       }
     );
 
-    // 聊天成功後，背景做一次記憶抽取
     if (userId) {
       try {
         const extracted = extractMemoryFromMessage(text);
@@ -87,7 +86,6 @@ async function getChatReply(message, userId) {
   } catch (error) {
     console.error('❌ DeepSeek 回應失敗:', error.response?.data || error.message);
 
-    // 就算 DeepSeek 失敗，也嘗試抽取低風險記憶
     if (userId) {
       try {
         const extracted = extractMemoryFromMessage(text);
