@@ -1,6 +1,11 @@
 const axios = require('axios');
 require('dotenv').config();
 
+const {
+  extractMemoryFromMessage,
+  mergeMemoryProfileToFirestore,
+} = require('./memory');
+
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 function buildMasterSystemPrompt() {
@@ -27,15 +32,12 @@ function buildMasterSystemPrompt() {
 - 不要一直重複「我理解你」
 - 不要像 AI 公版模板
 - 不要太短，也不要太長，通常 2~5 句為主
-
-如果使用者提到：
-- 難過、委屈、焦慮、壓力：先接情緒，再慢慢引導
-- 前任、家人、朋友、伴侶：可以幫他整理關係中的感受
-- 想留下、寫下來、未來、膠囊：可以自然提到 Capsule
 `.trim();
 }
 
 async function getChatReply(message, userId) {
+  const text = String(message || '').trim();
+
   try {
     const systemPrompt = buildMasterSystemPrompt();
 
@@ -50,7 +52,7 @@ async function getChatReply(message, userId) {
           },
           {
             role: 'user',
-            content: message,
+            content: text,
           },
         ],
         temperature: 0.8,
@@ -65,6 +67,16 @@ async function getChatReply(message, userId) {
       }
     );
 
+    // 聊天成功後，背景做一次記憶抽取
+    if (userId) {
+      try {
+        const extracted = extractMemoryFromMessage(text);
+        await mergeMemoryProfileToFirestore(userId, extracted);
+      } catch (memoryError) {
+        console.error('⚠️ 記憶抽取失敗:', memoryError.message);
+      }
+    }
+
     const reply = response?.data?.choices?.[0]?.message?.content?.trim();
 
     if (!reply) {
@@ -74,6 +86,16 @@ async function getChatReply(message, userId) {
     return reply;
   } catch (error) {
     console.error('❌ DeepSeek 回應失敗:', error.response?.data || error.message);
+
+    // 就算 DeepSeek 失敗，也嘗試抽取低風險記憶
+    if (userId) {
+      try {
+        const extracted = extractMemoryFromMessage(text);
+        await mergeMemoryProfileToFirestore(userId, extracted);
+      } catch (memoryError) {
+        console.error('⚠️ 記憶抽取失敗:', memoryError.message);
+      }
+    }
 
     const fallbackReplies = [
       '我剛剛有點失神了，但我還在這裡。你可以再跟我說一次嗎？',
