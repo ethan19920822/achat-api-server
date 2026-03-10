@@ -1,7 +1,27 @@
 const admin = require('firebase-admin');
 
+function getServiceAccountFromEnv() {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing');
+  }
+
+  const parsed = JSON.parse(raw);
+
+  // Render 環境有時 private_key 的換行會被吃掉，這裡補回來
+  if (parsed.private_key) {
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  }
+
+  return parsed;
+}
+
 if (!admin.apps.length) {
-  admin.initializeApp();
+  const serviceAccount = getServiceAccountFromEnv();
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
 }
 
 const db = admin.firestore();
@@ -33,9 +53,7 @@ function extractMemoryFromMessage(message) {
     longTermWishes: [],
   };
 
-  // -------------------------
   // 1) importantPeople
-  // -------------------------
   const peopleRules = [
     { keywords: ['媽媽', '母親', '媽'], value: '媽媽' },
     { keywords: ['爸爸', '父親', '爸'], value: '爸爸' },
@@ -63,9 +81,7 @@ function extractMemoryFromMessage(message) {
     }
   }
 
-  // -------------------------
   // 2) lifeEvents
-  // -------------------------
   const eventRules = [
     { keywords: ['分手'], value: '分手' },
     { keywords: ['搬家'], value: '搬家' },
@@ -88,9 +104,7 @@ function extractMemoryFromMessage(message) {
     }
   }
 
-  // -------------------------
   // 3) emotionalTraits
-  // -------------------------
   const emotionRules = [
     { keywords: ['焦慮'], value: '容易焦慮' },
     { keywords: ['想很多'], value: '容易想很多' },
@@ -114,9 +128,7 @@ function extractMemoryFromMessage(message) {
     }
   }
 
-  // -------------------------
   // 4) longTermWishes
-  // -------------------------
   const wishRules = [
     { keywords: ['想被理解', '被理解'], value: '想被理解' },
     { keywords: ['想賺錢', '賺錢'], value: '想賺錢' },
