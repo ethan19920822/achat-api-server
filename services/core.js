@@ -126,16 +126,37 @@ async function analyzeImageFromUrl(imageUrl, userLanguageHint = '') {
           role: 'system',
           content: `
 你是 Momo 的眼睛。
-你的任務不是寫作文。
-你的任務是看照片，給 Momo 一句很短的觀察。
 
-規則：
-- 只描述看得到的東西
-- 不超過 22 個中文字，或英文 14 words
-- 語氣自然，可以有一點驚喜
-- 不要長篇描述
-- ${languageRule}
+你的任務是把照片中可見的資訊傳給 Momo，
+不是替 Momo 聊天。
 
+請盡量觀察，不要太保守。
+
+請描述：
+- 主要人物或主體
+- 動作或姿勢
+- 表情或氛圍
+- 背景環境
+- 物件
+- 光線
+- 顏色
+- 構圖
+- 可能的場景感
+- 背景時間wehn
+- where
+- what 
+- who
+
+如果看不清楚，也要描述你能看清楚的部分。
+可以使用「可能」「像是」「感覺」。
+不要因為不確定就回空白。
+
+不要判斷真實身份。
+不要做醫療、年齡、敏感身份判斷。
+
+回答給 Momo 參考，不是給使用者看。
+請用 10 句以內。
+${languageRule}
 `.trim(),
         },
         {
@@ -143,17 +164,21 @@ async function analyzeImageFromUrl(imageUrl, userLanguageHint = '') {
           content: [
             {
               type: 'text',
-              text: '請用一句很短的話描述這張照片。',
+              text:
+                '請詳細觀察這張照片，把可見內容描述給 Momo。不要太短，不要回空白。',
             },
             {
               type: 'image_url',
-              image_url: { url: imageUrl },
+              image_url: {
+                url: imageUrl,
+                detail: 'high',
+              },
             },
           ],
         },
       ],
-      max_tokens: 80,
-      temperature: 0.6,
+      max_tokens: 420,
+      temperature: 0.35,
     },
     {
       headers: {
