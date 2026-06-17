@@ -131,7 +131,7 @@ async function analyzeImageFromUrl(imageUrl, userLanguageHint = '') {
 
 規則：
 - 只描述看得到的東西
-- 不超過 33 個中文字，或英文 28 words
+- 不超過 22 個中文字，或英文 14 words
 - 語氣自然，可以有一點驚喜
 - 不要長篇描述
 - ${languageRule}
