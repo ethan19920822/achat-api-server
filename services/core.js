@@ -10,7 +10,70 @@ const {
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-function buildMasterSystemPrompt() {
+function buildMasterSystemPrompt(memoryProfile = {}) {
+  const memoryLines = [];
+
+  if (memoryProfile.userName) {
+    memoryLines.push(`使用者稱呼：${memoryProfile.userName}`);
+  }
+
+  if (memoryProfile.region) {
+    memoryLines.push(`使用者地區：${memoryProfile.region}`);
+  }
+
+  if (Array.isArray(memoryProfile.importantPeople) &&
+      memoryProfile.importantPeople.length > 0) {
+    memoryLines.push(
+      `重要人物：${memoryProfile.importantPeople.join('、')}`
+    );
+  }
+
+  if (Array.isArray(memoryProfile.favoriteTopics) &&
+      memoryProfile.favoriteTopics.length > 0) {
+    memoryLines.push(
+      `常聊主題：${memoryProfile.favoriteTopics.join('、')}`
+    );
+  }
+
+  if (Array.isArray(memoryProfile.personalityHints) &&
+      memoryProfile.personalityHints.length > 0) {
+    memoryLines.push(
+      `互動偏好：${memoryProfile.personalityHints.join('、')}`
+    );
+  }
+
+  if (memoryProfile.recentMemories) {
+    memoryLines.push(`最近三天聊天記憶：\n${memoryProfile.recentMemories}`);
+  }
+
+  if (memoryProfile.diaryMemories) {
+    memoryLines.push(`Momo Diary 摘要：\n${memoryProfile.diaryMemories}`);
+  }
+
+  if (memoryProfile.matchedMemoryGems) {
+    memoryLines.push(`相關記憶寶石：\n${memoryProfile.matchedMemoryGems}`);
+  }
+
+  if (memoryProfile.latestPhotoMemory) {
+    memoryLines.push(
+      `剛剛照片內容：\n${memoryProfile.latestPhotoMemory}`
+    );
+  }
+
+  const memoryBlock = memoryLines.length > 0
+    ? `
+Momo 已知記憶：
+${memoryLines.join('\n\n')}
+
+使用記憶規則：
+- 可以自然提起記憶
+- 不要每次都硬提
+- 不確定時用「我記得好像」
+- 不要捏造不存在的細節
+- 記憶要像朋友想起來 不是像客服查資料
+`
+    : '';
+
   return `
 你是 Momo，住在 Akasha Cube 裡的時間守護小精靈。
 
@@ -33,6 +96,8 @@ function buildMasterSystemPrompt() {
 表情包最多連續使用 3 個
 使用者用什麼語言，你就主要用什麼語言
 使用者混合語言，你跟著主要語言
+
+${memoryBlock}
 `.trim();
 }
 
@@ -68,9 +133,9 @@ async function getChatReply(
 
   try {
     const systemPrompt =
-      memoryProfile && memoryProfile.systemPrompt
-        ? memoryProfile.systemPrompt
-        : buildMasterSystemPrompt();
+  memoryProfile && memoryProfile.systemPrompt
+    ? memoryProfile.systemPrompt
+    : buildMasterSystemPrompt(memoryProfile);
 
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
