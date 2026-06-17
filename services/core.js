@@ -35,6 +35,24 @@ function buildMasterSystemPrompt() {
 `.trim();
 }
 
+function buildRecentMessagesForModel(recentMessages) {
+  if (!Array.isArray(recentMessages)) return [];
+
+  return recentMessages
+    .slice(-12)
+    .map((m) => {
+      const role = m.role === 'assistant' ? 'assistant' : 'user';
+      const content = String(m.content || '').trim();
+
+      if (!content) return null;
+
+      return {
+        role,
+        content,
+      };
+    })
+    .filter(Boolean);
+}
 async function getChatReply(
   message,
   userId,
@@ -44,7 +62,10 @@ async function getChatReply(
   const text = String(message || '').trim();
 
   try {
-    const systemPrompt = buildMasterSystemPrompt();
+    const systemPrompt =
+  memoryProfile && memoryProfile.systemPrompt
+    ? memoryProfile.systemPrompt
+    : buildMasterSystemPrompt();
 
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
@@ -59,6 +80,12 @@ messages: [
     role: 'system',
     content: systemPrompt,
   },
+  ...buildRecentMessagesForModel(recentMessages),
+  {
+    role: 'user',
+    content: text,
+  },
+],
 
   ...history.map((m) => ({
     role: m.role === 'assistant'
