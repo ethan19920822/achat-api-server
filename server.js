@@ -21,13 +21,13 @@ app.use('/chat', chatRoutes);
 
 app.post('/vision', async (req, res) => {
   try {
-    const { imageUrl } = req.body;
+    const { imageUrl, userLanguageHint } = req.body;
 
     if (!imageUrl) {
       return res.status(400).json({ error: 'imageUrl is required' });
     }
 
-    const description = await analyzeImageFromUrl(imageUrl);
+    const description = await analyzeImageFromUrl(imageUrl, userLanguageHint);
 
     res.json({
       description,
