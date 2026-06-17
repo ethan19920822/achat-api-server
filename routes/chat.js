@@ -3,14 +3,24 @@ const router = express.Router();
 const { getChatReply } = require('../services/core');
 
 router.post('/', async (req, res) => {
-  const { userId, message } = req.body;
+  const {
+  userId,
+  message,
+  recentMessages,
+  memoryProfile,
+} = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
   }
 
   try {
-    const reply = await getChatReply(message, userId);
+    const reply = await getChatReply(
+  message,
+  userId,
+  recentMessages,
+  memoryProfile,
+);
     res.json({ reply });
   } catch (error) {
     console.error('Error generating reply:', error);
