@@ -35,7 +35,12 @@ function buildMasterSystemPrompt() {
 `.trim();
 }
 
-async function getChatReply(message, userId) {
+async function getChatReply(
+  message,
+  userId,
+  recentMessages = [],
+  memoryProfile = {},
+) {
   const text = String(message || '').trim();
 
   try {
@@ -45,16 +50,28 @@ async function getChatReply(message, userId) {
       'https://api.deepseek.com/v1/chat/completions',
       {
         model: 'deepseek-chat',
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          {
-            role: 'user',
-            content: text,
-          },
-        ],
+        const history = Array.isArray(recentMessages)
+  ? recentMessages.slice(-12)
+  : [];
+
+messages: [
+  {
+    role: 'system',
+    content: systemPrompt,
+  },
+
+  ...history.map((m) => ({
+    role: m.role === 'assistant'
+      ? 'assistant'
+      : 'user',
+    content: m.content ?? '',
+  })),
+
+  {
+    role: 'user',
+    content: text,
+  },
+],
         temperature: 0.8,
         max_tokens: 500,
       },
