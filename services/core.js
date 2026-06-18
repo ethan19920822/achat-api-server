@@ -180,7 +180,23 @@ async function analyzeImageFromUrl(imageUrl, userLanguageHint = '') {
 
   const languageRule = userLanguageHint
     ? `使用者主要語言是：${userLanguageHint}。請用同一種語言回答。`
-    : '請依照使用者可能的語境，用自然繁體中文回答。';
+    : '請用自然繁體中文回答。';
+
+  // 先由 Render 下載 Firebase 圖片，避免 OpenAI 自己抓 Firebase URL 超時
+  const imageRes = await axios.get(imageUrl, {
+    responseType: 'arraybuffer',
+    timeout: 90000,
+  });
+
+  const contentType =
+    imageRes.headers['content-type'] || 'image/jpeg';
+
+  const base64Image = Buffer
+    .from(imageRes.data)
+    .toString('base64');
+
+  const dataUrl =
+    `data:${contentType};base64,${base64Image}`;
 
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
@@ -227,22 +243,22 @@ ${languageRule}
             {
               type: 'image_url',
               image_url: {
-                url: imageUrl,
+                url: dataUrl,
                 detail: 'high',
               },
             },
           ],
         },
       ],
-      max_tokens: 420,
-      temperature: 0.35,
+      max_tokens: 500,
+      temperature: 0.2,
     },
     {
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      timeout: 70000,
+      timeout: 120000,
     }
   );
 
