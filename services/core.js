@@ -155,7 +155,7 @@ console.log('Momo payload chars:', JSON.stringify(modelMessages).length);
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
       {
-        model: 'deepseek-v4-flash',
+        model: 'deepseek-chat',
         messages: modelMessages,
         temperature: 0.95,
         max_tokens: 120,
@@ -181,7 +181,11 @@ console.log('Momo payload chars:', JSON.stringify(modelMessages).length);
     return response?.data?.choices?.[0]?.message?.content?.trim() ||
       '欸 我剛剛卡了一下😆\n你再說一次';
   } catch (error) {
-    console.error('❌ DeepSeek 回應失敗:', error.response?.data || error.message);
+    console.error('❌ DeepSeek 回應失敗:', {
+  status: error.response?.status,
+  data: error.response?.data,
+  message: error.message,
+});
     return '我剛剛有點恍神😆\n再丟一次給我';
   }
 }
