@@ -259,13 +259,13 @@ ${languageRule}
               type: 'image_url',
               image_url: {
                 url: dataUrl,
-                detail: 'high',
+                detail: 'low',
               },
             },
           ],
         },
       ],
-      max_tokens: 500,
+      max_tokens: 180,
       temperature: 0.2,
     },
     {
