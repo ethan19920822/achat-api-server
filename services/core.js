@@ -10,6 +10,10 @@ const {
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+function limitText(value, max = 1200) {
+  return String(value || '').slice(0, max);
+}
+
 function buildMasterSystemPrompt(memoryProfile = {}) {
   const memoryLines = [];
 
@@ -132,22 +136,29 @@ async function getChatReply(
   const text = String(message || '').trim();
 
   try {
-    const systemPrompt =
+   const systemPrompt = limitText(
   memoryProfile && memoryProfile.systemPrompt
     ? memoryProfile.systemPrompt
-    : buildMasterSystemPrompt(memoryProfile);
+    : buildMasterSystemPrompt(memoryProfile),
+  1800
+);
+    const modelMessages = [
+  { role: 'system', content: systemPrompt },
+  ...buildRecentMessagesForModel(recentMessages),
+  { role: 'user', content: text },
+];
+
+console.log('Momo model:', 'deepseek-v4-flash');
+console.log('Momo messages count:', modelMessages.length);
+console.log('Momo payload chars:', JSON.stringify(modelMessages).length);
 
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
       {
-        model: 'deepseek-chat',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...buildRecentMessagesForModel(recentMessages),
-          { role: 'user', content: text },
-        ],
+        model: 'deepseek-v4-flash',
+        messages: modelMessages,
         temperature: 0.95,
-        max_tokens: 360,
+        max_tokens: 120,
       },
       {
         headers: {
