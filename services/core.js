@@ -231,12 +231,15 @@ async function getChatReply(
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
       {
-        model: DEEPSEEK_MODEL,
-        messages: modelMessages,
-        temperature: 0.8,
-        max_tokens: 120,
-        stream: false,
-      },
+  model: DEEPSEEK_MODEL,
+  messages: modelMessages,
+  thinking: {
+    type: 'disabled',
+  },
+  temperature: 0.8,
+  max_tokens: 160,
+  stream: false,
+},
       {
         headers: {
           Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
