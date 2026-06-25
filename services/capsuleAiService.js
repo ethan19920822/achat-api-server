@@ -35,7 +35,7 @@ function compactMessages(messages) {
       role: safeText(m.role || m.type || ''),
       text: clampText(m.text || m.content || '', MAX_MESSAGE_CHARS),
     }))
-    .filter((m) => m.text.isNotEmpty || m.text.length > 0)
+    .filter((m) => m.text.length > 0)
     .slice(-MAX_INTERVIEW_MESSAGES);
 }
 
@@ -202,6 +202,7 @@ async function callDeepSeek({
   console.log('[CAPSULE_AI_REQUEST]', {
     route,
     model: DEEPSEEK_MODEL,
+    mode: 'non-thinking',
     payloadChars,
     estimatedTokens,
   });
@@ -235,6 +236,9 @@ async function callDeepSeek({
       {
         model: DEEPSEEK_MODEL,
         messages,
+        thinking: {
+          type: 'disabled',
+        },
         temperature,
         max_tokens: maxTokens,
         stream: false,
@@ -254,10 +258,12 @@ async function callDeepSeek({
     console.log('[CAPSULE_AI_RESPONSE]', {
       route,
       model: DEEPSEEK_MODEL,
+      mode: 'non-thinking',
       status: response.status,
       finishReason: choice?.finish_reason,
       hasContent: !!choice?.message?.content,
       contentPreview: String(choice?.message?.content || '').slice(0, 80),
+      reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens || 0,
       usage,
     });
 
@@ -282,6 +288,7 @@ async function callDeepSeek({
     console.error('❌ Capsule DeepSeek failed:', {
       route,
       model: DEEPSEEK_MODEL,
+      mode: 'non-thinking',
       status,
       data,
       message: error.message,
@@ -470,4 +477,4 @@ ${rawText}
 module.exports = {
   generateCapsuleInterviewQuestion,
   generateCapsuleStoryDraft,
-};  
+};
