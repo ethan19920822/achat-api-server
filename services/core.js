@@ -7,6 +7,12 @@ const {
   mergeMemoryProfileToFirestore,
 } = require('./memory');
 
+const {
+  canCallAI,
+  recordAIUsage,
+  estimateTokensFromChars,
+} = require('./aiUsageMonitor');
+
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -27,68 +33,39 @@ function safeTrim(value) {
 function buildMasterSystemPrompt(memoryProfile = {}) {
   const memoryLines = [];
 
-  if (memoryProfile.userName) {
-    memoryLines.push(`使用者稱呼：${memoryProfile.userName}`);
+  if (memoryProfile.userName) memoryLines.push(`使用者稱呼：${memoryProfile.userName}`);
+  if (memoryProfile.region) memoryLines.push(`使用者地區：${memoryProfile.region}`);
+
+  if (Array.isArray(memoryProfile.importantPeople) && memoryProfile.importantPeople.length > 0) {
+    memoryLines.push(`重要人物：${memoryProfile.importantPeople.slice(0, 8).join('、')}`);
   }
 
-  if (memoryProfile.region) {
-    memoryLines.push(`使用者地區：${memoryProfile.region}`);
+  if (Array.isArray(memoryProfile.favoriteTopics) && memoryProfile.favoriteTopics.length > 0) {
+    memoryLines.push(`常聊主題：${memoryProfile.favoriteTopics.slice(0, 8).join('、')}`);
   }
 
-  if (
-    Array.isArray(memoryProfile.importantPeople) &&
-    memoryProfile.importantPeople.length > 0
-  ) {
-    memoryLines.push(
-      `重要人物：${memoryProfile.importantPeople.slice(0, 8).join('、')}`
-    );
-  }
-
-  if (
-    Array.isArray(memoryProfile.favoriteTopics) &&
-    memoryProfile.favoriteTopics.length > 0
-  ) {
-    memoryLines.push(
-      `常聊主題：${memoryProfile.favoriteTopics.slice(0, 8).join('、')}`
-    );
-  }
-
-  if (
-    Array.isArray(memoryProfile.personalityHints) &&
-    memoryProfile.personalityHints.length > 0
-  ) {
-    memoryLines.push(
-      `互動偏好：${memoryProfile.personalityHints.slice(0, 8).join('、')}`
-    );
+  if (Array.isArray(memoryProfile.personalityHints) && memoryProfile.personalityHints.length > 0) {
+    memoryLines.push(`互動偏好：${memoryProfile.personalityHints.slice(0, 8).join('、')}`);
   }
 
   if (memoryProfile.recentMemories) {
-    memoryLines.push(
-      `最近三天聊天記憶：\n${limitText(memoryProfile.recentMemories, 700)}`
-    );
+    memoryLines.push(`最近三天聊天記憶：\n${limitText(memoryProfile.recentMemories, 700)}`);
   }
 
   if (memoryProfile.diaryMemories) {
-    memoryLines.push(
-      `Momo Diary 摘要：\n${limitText(memoryProfile.diaryMemories, 700)}`
-    );
+    memoryLines.push(`Momo Diary 摘要：\n${limitText(memoryProfile.diaryMemories, 700)}`);
   }
 
   if (memoryProfile.matchedMemoryGems) {
-    memoryLines.push(
-      `相關記憶寶石：\n${limitText(memoryProfile.matchedMemoryGems, 700)}`
-    );
+    memoryLines.push(`相關記憶寶石：\n${limitText(memoryProfile.matchedMemoryGems, 700)}`);
   }
 
   if (memoryProfile.latestPhotoMemory) {
-    memoryLines.push(
-      `剛剛照片內容：\n${limitText(memoryProfile.latestPhotoMemory, 700)}`
-    );
+    memoryLines.push(`剛剛照片內容：\n${limitText(memoryProfile.latestPhotoMemory, 700)}`);
   }
 
-  const memoryBlock =
-    memoryLines.length > 0
-      ? `
+  const memoryBlock = memoryLines.length > 0
+    ? `
 Momo 已知記憶：
 ${memoryLines.join('\n\n')}
 
@@ -99,7 +76,7 @@ ${memoryLines.join('\n\n')}
 - 不要捏造不存在的細節
 - 記憶要像朋友想起來 不是像客服查資料
 `
-      : '';
+    : '';
 
   return `
 你是 Momo，住在 Akasha Cube 裡的時間守護小精靈。
@@ -195,8 +172,19 @@ function buildModelMessages(message, recentMessages = [], memoryProfile = {}) {
   ];
 }
 
-function payloadTooLarge(modelMessages) {
-  return JSON.stringify(modelMessages).length > MAX_MODEL_PAYLOAD_CHARS;
+function extractDeepSeekText(data) {
+  const choice = data?.choices?.[0];
+
+  const content = choice?.message?.content;
+  if (typeof content === 'string' && content.trim()) return content.trim();
+
+  const reasoning = choice?.message?.reasoning_content;
+  if (typeof reasoning === 'string' && reasoning.trim()) return reasoning.trim();
+
+  const text = choice?.text;
+  if (typeof text === 'string' && text.trim()) return text.trim();
+
+  return '';
 }
 
 async function getChatReply(
@@ -205,42 +193,48 @@ async function getChatReply(
   recentMessages = [],
   memoryProfile = {}
 ) {
+  const startedAt = Date.now();
   const text = safeTrim(message);
+  const route = '/chat';
 
-  if (!text) {
-    return '你剛剛好像沒打字😆';
-  }
+  if (!text) return '你剛剛好像沒打字😆';
 
   if (!DEEPSEEK_API_KEY) {
     console.error('❌ DEEPSEEK_API_KEY missing');
     return 'AI 金鑰暫時沒有設定好，膠囊內容已先保留。';
   }
 
+  const modelMessages = buildModelMessages(text, recentMessages, memoryProfile);
+  const payloadChars = JSON.stringify(modelMessages).length;
+  const estimatedTokens = estimateTokensFromChars(payloadChars);
+
+  console.log('Momo model:', DEEPSEEK_MODEL);
+  console.log('Momo messages count:', modelMessages.length);
+  console.log('Momo payload chars:', payloadChars);
+
+  if (payloadChars > MAX_MODEL_PAYLOAD_CHARS) {
+    console.error('❌ Momo payload too large, blocked:', payloadChars);
+    return '這次內容太長，我先幫你保留重點，晚點再整理成膠囊。';
+  }
+
+  const gate = canCallAI({
+    userId,
+    route,
+    model: DEEPSEEK_MODEL,
+    estimatedTokens,
+  });
+
+  if (!gate.allowed) return gate.message;
+
   try {
-    const modelMessages = buildModelMessages(
-      text,
-      recentMessages,
-      memoryProfile
-    );
-
-    const payloadChars = JSON.stringify(modelMessages).length;
-
-    console.log('Momo model:', DEEPSEEK_MODEL);
-    console.log('Momo messages count:', modelMessages.length);
-    console.log('Momo payload chars:', payloadChars);
-
-    if (payloadTooLarge(modelMessages)) {
-      console.error('❌ Momo payload too large, blocked:', payloadChars);
-      return '這次內容太長，我先幫你保留重點，晚點再整理成膠囊。';
-    }
-
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
       {
         model: DEEPSEEK_MODEL,
         messages: modelMessages,
         temperature: 0.8,
-        max_tokens: 90,
+        max_tokens: 120,
+        stream: false,
       },
       {
         headers: {
@@ -251,6 +245,37 @@ async function getChatReply(
       }
     );
 
+    const usage = response?.data?.usage || {};
+    const choice = response?.data?.choices?.[0];
+
+    console.log('[AI_RESPONSE]', {
+      model: DEEPSEEK_MODEL,
+      status: response.status,
+      finishReason: choice?.finish_reason,
+      hasContent: !!choice?.message?.content,
+      contentPreview: String(choice?.message?.content || '').slice(0, 80),
+      usage,
+    });
+
+    recordAIUsage({
+      userId,
+      route,
+      model: DEEPSEEK_MODEL,
+      payloadChars,
+      promptTokens: usage.prompt_tokens || 0,
+      completionTokens: usage.completion_tokens || 0,
+      success: true,
+      status: response.status,
+      latencyMs: Date.now() - startedAt,
+    });
+
+    const reply = extractDeepSeekText(response.data);
+
+    if (!reply) {
+      console.error('❌ DeepSeek empty reply:', JSON.stringify(response.data).slice(0, 1200));
+      return 'Momo 收到空白回應了，我們先保留這句，等等再試。';
+    }
+
     if (userId) {
       try {
         const extracted = extractMemoryFromMessage(text);
@@ -260,13 +285,11 @@ async function getChatReply(
       }
     }
 
-    return (
-      response?.data?.choices?.[0]?.message?.content?.trim() ||
-      '欸 我剛剛卡了一下😆\n你再說一次'
-    );
+    return reply;
   } catch (error) {
     const status = error.response?.status;
     const data = error.response?.data;
+    const errorCode = data?.error?.code || data?.error?.type || 'unknown_error';
 
     console.error('❌ DeepSeek 回應失敗:', {
       model: DEEPSEEK_MODEL,
@@ -275,19 +298,22 @@ async function getChatReply(
       message: error.message,
     });
 
-    if (status === 402) {
-      return '非常抱歉，AI 餘額暫時不足，請聯絡客服協助。';
-    }
+    recordAIUsage({
+      userId,
+      route,
+      model: DEEPSEEK_MODEL,
+      payloadChars,
+      success: false,
+      status: status || 0,
+      errorCode,
+      latencyMs: Date.now() - startedAt,
+    });
 
-    if (status === 429) {
-      return 'Momo 被呼叫太快了，等一下再試。';
-    }
+    if (status === 402) return 'AI 餘額暫時不足，膠囊內容已先保留。';
+    if (status === 429) return 'Momo 被呼叫太快了，等一下再試。';
+    if (status === 400) return 'AI 模型設定可能有誤，膠囊內容已先保留。';
 
-    if (status === 400) {
-      return 'AI 模型設定可能有誤，膠囊內容已先保留。';
-    }
-
-    return '我剛剛有點恍神😆\n再丟一次給我';
+    return 'Momo 剛剛真的斷線了，這句我先幫你保留。';
   }
 }
 
@@ -304,9 +330,7 @@ async function analyzeImageFromUrl(imageUrl, userLanguageHint = '') {
   });
 
   const contentType = imageRes.headers['content-type'] || 'image/jpeg';
-
   const base64Image = Buffer.from(imageRes.data).toString('base64');
-
   const dataUrl = `data:${contentType};base64,${base64Image}`;
 
   const response = await axios.post(
@@ -347,8 +371,7 @@ ${languageRule}
           content: [
             {
               type: 'text',
-              text:
-                '請詳細觀察這張照片，把可見內容描述給 Momo。不要太簡短，不要回空白。',
+              text: '請詳細觀察這張照片，把可見內容描述給 Momo。不要太簡短，不要回空白。',
             },
             {
               type: 'image_url',
