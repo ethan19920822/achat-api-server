@@ -12,12 +12,15 @@ app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 
 const chatRoutes = require('./routes/chat');
+const capsuleRoutes = require('./routes/capsule');
+
 const {
   analyzeImageFromUrl,
   transcribeAudioFromUrl,
 } = require('./services/core');
 
 app.use('/chat', chatRoutes);
+app.use('/capsule', capsuleRoutes);
 
 app.post('/vision', async (req, res) => {
   try {
