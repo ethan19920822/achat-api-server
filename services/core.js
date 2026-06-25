@@ -176,13 +176,14 @@ function extractDeepSeekText(data) {
   const choice = data?.choices?.[0];
 
   const content = choice?.message?.content;
-  if (typeof content === 'string' && content.trim()) return content.trim();
-
-  const reasoning = choice?.message?.reasoning_content;
-  if (typeof reasoning === 'string' && reasoning.trim()) return reasoning.trim();
+  if (typeof content === 'string' && content.trim()) {
+    return content.trim();
+  }
 
   const text = choice?.text;
-  if (typeof text === 'string' && text.trim()) return text.trim();
+  if (typeof text === 'string' && text.trim()) {
+    return text.trim();
+  }
 
   return '';
 }
