@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const router = express.Router();
 
 const { getChatReply } = require('../services/core');
+const { getUsageSummary } = require('../services/aiUsageMonitor');
 
 const recentRequests = new Map();
 
@@ -36,6 +37,10 @@ function cleanupRecentRequests() {
     }
   }
 }
+
+router.get('/usage', (req, res) => {
+  res.json(getUsageSummary());
+});
 
 router.post('/', async (req, res) => {
   const {
