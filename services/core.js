@@ -10,8 +10,18 @@ const {
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+
+const MAX_SYSTEM_PROMPT_CHARS = 1800;
+const MAX_USER_MESSAGE_CHARS = 1800;
+const MAX_MODEL_PAYLOAD_CHARS = 9000;
+
 function limitText(value, max = 1200) {
   return String(value || '').slice(0, max);
+}
+
+function safeTrim(value) {
+  return String(value || '').trim();
 }
 
 function buildMasterSystemPrompt(memoryProfile = {}) {
@@ -25,47 +35,60 @@ function buildMasterSystemPrompt(memoryProfile = {}) {
     memoryLines.push(`使用者地區：${memoryProfile.region}`);
   }
 
-  if (Array.isArray(memoryProfile.importantPeople) &&
-      memoryProfile.importantPeople.length > 0) {
+  if (
+    Array.isArray(memoryProfile.importantPeople) &&
+    memoryProfile.importantPeople.length > 0
+  ) {
     memoryLines.push(
-      `重要人物：${memoryProfile.importantPeople.join('、')}`
+      `重要人物：${memoryProfile.importantPeople.slice(0, 8).join('、')}`
     );
   }
 
-  if (Array.isArray(memoryProfile.favoriteTopics) &&
-      memoryProfile.favoriteTopics.length > 0) {
+  if (
+    Array.isArray(memoryProfile.favoriteTopics) &&
+    memoryProfile.favoriteTopics.length > 0
+  ) {
     memoryLines.push(
-      `常聊主題：${memoryProfile.favoriteTopics.join('、')}`
+      `常聊主題：${memoryProfile.favoriteTopics.slice(0, 8).join('、')}`
     );
   }
 
-  if (Array.isArray(memoryProfile.personalityHints) &&
-      memoryProfile.personalityHints.length > 0) {
+  if (
+    Array.isArray(memoryProfile.personalityHints) &&
+    memoryProfile.personalityHints.length > 0
+  ) {
     memoryLines.push(
-      `互動偏好：${memoryProfile.personalityHints.join('、')}`
+      `互動偏好：${memoryProfile.personalityHints.slice(0, 8).join('、')}`
     );
   }
 
   if (memoryProfile.recentMemories) {
-    memoryLines.push(`最近三天聊天記憶：\n${memoryProfile.recentMemories}`);
+    memoryLines.push(
+      `最近三天聊天記憶：\n${limitText(memoryProfile.recentMemories, 700)}`
+    );
   }
 
   if (memoryProfile.diaryMemories) {
-    memoryLines.push(`Momo Diary 摘要：\n${memoryProfile.diaryMemories}`);
+    memoryLines.push(
+      `Momo Diary 摘要：\n${limitText(memoryProfile.diaryMemories, 700)}`
+    );
   }
 
   if (memoryProfile.matchedMemoryGems) {
-    memoryLines.push(`相關記憶寶石：\n${memoryProfile.matchedMemoryGems}`);
+    memoryLines.push(
+      `相關記憶寶石：\n${limitText(memoryProfile.matchedMemoryGems, 700)}`
+    );
   }
 
   if (memoryProfile.latestPhotoMemory) {
     memoryLines.push(
-      `剛剛照片內容：\n${memoryProfile.latestPhotoMemory}`
+      `剛剛照片內容：\n${limitText(memoryProfile.latestPhotoMemory, 700)}`
     );
   }
 
-  const memoryBlock = memoryLines.length > 0
-    ? `
+  const memoryBlock =
+    memoryLines.length > 0
+      ? `
 Momo 已知記憶：
 ${memoryLines.join('\n\n')}
 
@@ -76,7 +99,7 @@ ${memoryLines.join('\n\n')}
 - 不要捏造不存在的細節
 - 記憶要像朋友想起來 不是像客服查資料
 `
-    : '';
+      : '';
 
   return `
 你是 Momo，住在 Akasha Cube 裡的時間守護小精靈。
@@ -109,56 +132,115 @@ function buildRecentMessagesForModel(recentMessages) {
   if (!Array.isArray(recentMessages)) return [];
 
   return recentMessages
-    .slice(-12)
+    .slice(-8)
     .map((m) => {
       const role = m.role === 'assistant' ? 'assistant' : 'user';
-      const content = String(m.content || '').trim();
+      const content = safeTrim(m.content || m.text);
+
       if (!content) return null;
 
       if (
         content.startsWith('[photo_url]') ||
-        content.startsWith('[voice_url]')
+        content.startsWith('[voice_url]') ||
+        content.startsWith('[video_url]')
       ) {
         return null;
       }
 
-      return { role, content };
+      return {
+        role,
+        content: limitText(content, 500),
+      };
     })
     .filter(Boolean);
+}
+
+function compactMemoryProfile(memoryProfile = {}) {
+  return {
+    userName: memoryProfile.userName,
+    region: memoryProfile.region,
+    importantPeople: Array.isArray(memoryProfile.importantPeople)
+      ? memoryProfile.importantPeople.slice(0, 8)
+      : [],
+    favoriteTopics: Array.isArray(memoryProfile.favoriteTopics)
+      ? memoryProfile.favoriteTopics.slice(0, 8)
+      : [],
+    personalityHints: Array.isArray(memoryProfile.personalityHints)
+      ? memoryProfile.personalityHints.slice(0, 8)
+      : [],
+    recentMemories: limitText(memoryProfile.recentMemories, 700),
+    diaryMemories: limitText(memoryProfile.diaryMemories, 700),
+    matchedMemoryGems: limitText(memoryProfile.matchedMemoryGems, 700),
+    latestPhotoMemory: limitText(memoryProfile.latestPhotoMemory, 700),
+    systemPrompt: memoryProfile.systemPrompt
+      ? limitText(memoryProfile.systemPrompt, MAX_SYSTEM_PROMPT_CHARS)
+      : '',
+  };
+}
+
+function buildModelMessages(message, recentMessages = [], memoryProfile = {}) {
+  const compactProfile = compactMemoryProfile(memoryProfile);
+
+  const systemPrompt = limitText(
+    compactProfile.systemPrompt || buildMasterSystemPrompt(compactProfile),
+    MAX_SYSTEM_PROMPT_CHARS
+  );
+
+  const userText = limitText(message, MAX_USER_MESSAGE_CHARS);
+
+  return [
+    { role: 'system', content: systemPrompt },
+    ...buildRecentMessagesForModel(recentMessages),
+    { role: 'user', content: userText },
+  ];
+}
+
+function payloadTooLarge(modelMessages) {
+  return JSON.stringify(modelMessages).length > MAX_MODEL_PAYLOAD_CHARS;
 }
 
 async function getChatReply(
   message,
   userId,
   recentMessages = [],
-  memoryProfile = {},
+  memoryProfile = {}
 ) {
-  const text = String(message || '').trim();
+  const text = safeTrim(message);
+
+  if (!text) {
+    return '你剛剛好像沒打字😆';
+  }
+
+  if (!DEEPSEEK_API_KEY) {
+    console.error('❌ DEEPSEEK_API_KEY missing');
+    return 'AI 金鑰暫時沒有設定好，膠囊內容已先保留。';
+  }
 
   try {
-   const systemPrompt = limitText(
-  memoryProfile && memoryProfile.systemPrompt
-    ? memoryProfile.systemPrompt
-    : buildMasterSystemPrompt(memoryProfile),
-  1800
-);
-    const modelMessages = [
-  { role: 'system', content: systemPrompt },
-  ...buildRecentMessagesForModel(recentMessages),
-  { role: 'user', content: text },
-];
+    const modelMessages = buildModelMessages(
+      text,
+      recentMessages,
+      memoryProfile
+    );
 
-console.log('Momo model:', 'deepseek-v4-flash');
-console.log('Momo messages count:', modelMessages.length);
-console.log('Momo payload chars:', JSON.stringify(modelMessages).length);
+    const payloadChars = JSON.stringify(modelMessages).length;
+
+    console.log('Momo model:', DEEPSEEK_MODEL);
+    console.log('Momo messages count:', modelMessages.length);
+    console.log('Momo payload chars:', payloadChars);
+
+    if (payloadTooLarge(modelMessages)) {
+      console.error('❌ Momo payload too large, blocked:', payloadChars);
+      return '這次內容太長，我先幫你保留重點，晚點再整理成膠囊。';
+    }
 
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
       {
-        model: 'deepseek-chat',
+        model: DEEPSEEK_MODEL,
         messages: modelMessages,
-        temperature: 0.95,
-        max_tokens: 120,
+        temperature: 0.8,
+        max_tokens: 90,
       },
       {
         headers: {
@@ -178,14 +260,33 @@ console.log('Momo payload chars:', JSON.stringify(modelMessages).length);
       }
     }
 
-    return response?.data?.choices?.[0]?.message?.content?.trim() ||
-      '欸 我剛剛卡了一下😆\n你再說一次';
+    return (
+      response?.data?.choices?.[0]?.message?.content?.trim() ||
+      '欸 我剛剛卡了一下😆\n你再說一次'
+    );
   } catch (error) {
+    const status = error.response?.status;
+    const data = error.response?.data;
+
     console.error('❌ DeepSeek 回應失敗:', {
-  status: error.response?.status,
-  data: error.response?.data,
-  message: error.message,
-});
+      model: DEEPSEEK_MODEL,
+      status,
+      data,
+      message: error.message,
+    });
+
+    if (status === 402) {
+      return '非常抱歉，AI 餘額暫時不足，請聯絡客服協助。';
+    }
+
+    if (status === 429) {
+      return 'Momo 被呼叫太快了，等一下再試。';
+    }
+
+    if (status === 400) {
+      return 'AI 模型設定可能有誤，膠囊內容已先保留。';
+    }
+
     return '我剛剛有點恍神😆\n再丟一次給我';
   }
 }
@@ -197,21 +298,16 @@ async function analyzeImageFromUrl(imageUrl, userLanguageHint = '') {
     ? `使用者主要語言是：${userLanguageHint}。請用同一種語言回答。`
     : '請用自然繁體中文回答。';
 
-  // 先由 Render 下載 Firebase 圖片，避免 OpenAI 自己抓 Firebase URL 超時
   const imageRes = await axios.get(imageUrl, {
     responseType: 'arraybuffer',
     timeout: 90000,
   });
 
-  const contentType =
-    imageRes.headers['content-type'] || 'image/jpeg';
+  const contentType = imageRes.headers['content-type'] || 'image/jpeg';
 
-  const base64Image = Buffer
-    .from(imageRes.data)
-    .toString('base64');
+  const base64Image = Buffer.from(imageRes.data).toString('base64');
 
-  const dataUrl =
-    `data:${contentType};base64,${base64Image}`;
+  const dataUrl = `data:${contentType};base64,${base64Image}`;
 
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
@@ -231,16 +327,15 @@ async function analyzeImageFromUrl(imageUrl, userLanguageHint = '') {
 
 請描述：
 - 主要人物或主體 who or what
-- 背景環境有什麼類似哪裡的場景where 
+- 背景環境有什麼類似哪裡的場景 where
 - 光線時間與氣氛 when
 - 表情動作或姿勢 pose or 態度
-- 其他配色和顏色或其他構圖的場景感what else
-- 
+- 其他配色和顏色或其他構圖的場景感 what else
 - 可以描述人物外觀 姿勢 表情 衣服 畫面位置等其他
+
 如果看不清楚，也要描述你能看清楚的部分。
 可以使用「可能」「像是」「感覺」。
 不要因為不確定就回空白。
-
 
 回答給 Momo 參考，不是給使用者看。
 請用 10 句以內。
@@ -289,6 +384,7 @@ async function transcribeAudioFromUrl(audioUrl) {
   });
 
   const form = new FormData();
+
   form.append('file', Buffer.from(audioResponse.data), {
     filename: 'momo_voice.m4a',
     contentType: 'audio/m4a',
