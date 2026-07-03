@@ -13,6 +13,7 @@ app.use(bodyParser.json({ limit: '10mb' }));
 
 const chatRoutes = require('./routes/chat');
 const capsuleRoutes = require('./routes/capsule');
+const { startEmailQueueWorker } = require('./services/capsuleDeliveryWorker');
 
 const {
   analyzeImageFromUrl,
@@ -63,9 +64,10 @@ app.post('/transcribe', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('AChat API Server is running.');
+  res.send('AChat API Server is running. Email Queue v2 is available.');
 });
 
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
+  startEmailQueueWorker();
 });
