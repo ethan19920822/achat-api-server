@@ -6,6 +6,26 @@ const {
   generateCapsuleStoryDraft,
 } = require('../services/capsuleAiService');
 
+const {
+  processDueCapsules,
+  sendOneCapsule,
+} = require('../services/capsuleDeliveryWorker');
+
+function assertQueueSecret(req, res) {
+  const secret = process.env.EMAIL_QUEUE_SECRET;
+  if (!secret) return true;
+
+  const incoming =
+    req.headers['x-email-queue-secret'] ||
+    req.query.secret ||
+    req.body?.secret;
+
+  if (incoming === secret) return true;
+
+  res.status(401).json({ error: 'Unauthorized email queue request' });
+  return false;
+}
+
 router.post('/interview', async (req, res) => {
   try {
     const question = await generateCapsuleInterviewQuestion(req.body || {});
@@ -40,6 +60,49 @@ router.post('/story', async (req, res) => {
       reply: fallbackStory(req.body || {}),
     });
   }
+});
+
+// Email Queue v2.0
+// 手動觸發：POST /capsule/process-due-emails
+router.post('/process-due-emails', async (req, res) => {
+  if (!assertQueueSecret(req, res)) return;
+
+  try {
+    const result = await processDueCapsules({ limit: req.body?.limit });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error('process-due-emails error:', error?.response?.data || error.message);
+    res.status(500).json({
+      ok: false,
+      error: error?.response?.data || error.message || 'Email queue failed',
+    });
+  }
+});
+
+// 單封測試：POST /capsule/send-one/:capsuleId
+router.post('/send-one/:capsuleId', async (req, res) => {
+  if (!assertQueueSecret(req, res)) return;
+
+  try {
+    const result = await sendOneCapsule(req.params.capsuleId);
+    res.json({ ok: true, result });
+  } catch (error) {
+    console.error('send-one error:', error?.response?.data || error.message);
+    res.status(500).json({
+      ok: false,
+      error: error?.response?.data || error.message || 'Send one failed',
+    });
+  }
+});
+
+router.get('/delivery-health', (req, res) => {
+  res.json({
+    ok: true,
+    resendConfigured: Boolean(process.env.RESEND_API_KEY),
+    firebaseConfigured: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT),
+    workerEnabled: String(process.env.EMAIL_WORKER_ENABLED || 'true').toLowerCase() !== 'false',
+    from: process.env.CAPSULE_FROM_EMAIL || 'Akasha Cube <onboarding@resend.dev>',
+  });
 });
 
 function fallbackStory(body) {
