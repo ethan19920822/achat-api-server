@@ -1,0 +1,348 @@
+const axios = require('axios');
+const admin = require('firebase-admin');
+
+function getServiceAccountFromEnv() {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing');
+  }
+  const parsed = JSON.parse(raw);
+  if (parsed.private_key) parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  return parsed;
+}
+
+function initFirebaseAdmin() {
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      credential: admin.credential.cert(getServiceAccountFromEnv()),
+    });
+  }
+  return admin.firestore();
+}
+
+const db = initFirebaseAdmin();
+
+const DEFAULT_FROM = 'Akasha Cube <onboarding@resend.dev>';
+const DEFAULT_APP_URL = 'https://akashacube.vip';
+let workerStarted = false;
+let workerBusy = false;
+
+function nowDate() {
+  return new Date();
+}
+
+function toDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value.toDate === 'function') return value.toDate();
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function formatDate(date) {
+  if (!date) return '未設定日期';
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}/${m}/${d}`;
+}
+
+function safeText(value, fallback = '') {
+  const text = String(value ?? '').trim();
+  return text || fallback;
+}
+
+function htmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function capsuleMode(data) {
+  return String(data.capsuleMode || data.mode || data.creationMode || 'send_on_day').toLowerCase();
+}
+
+function resolveSendDate(data) {
+  return (
+    toDate(data.sendAt) ||
+    toDate(data.deliveryDate) ||
+    toDate(data.scheduledAt) ||
+    toDate(data.triggerDate)
+  );
+}
+
+function isDueSendOnDay(data, now = nowDate()) {
+  const mode = capsuleMode(data);
+  if (mode !== 'send_on_day' && mode !== 'sendonday' && mode !== 'date') return false;
+
+  const status = String(data.status || '').toLowerCase();
+  if (['sent', 'opened', 'delivered', 'cancelled', 'deleted'].includes(status)) return false;
+
+  const emailStatus = String(data.emailStatus || '').toLowerCase();
+  if (!['queued', 'pending', 'email_queued', 'retry'].includes(emailStatus)) return false;
+
+  const date = resolveSendDate(data);
+  if (!date) return false;
+  return date.getTime() <= now.getTime();
+}
+
+function plainTextToHtml(text) {
+  const safe = htmlEscape(text || '這封信沒有留下文字，但它帶著一段被保存的心意。');
+  return safe.replace(/\n/g, '<br/>');
+}
+
+function buildCapsuleEmailHtml({ capsuleId, data }) {
+  const title = htmlEscape(safeText(data.title || data.subject, '一封來自過去的信'));
+  const content = plainTextToHtml(data.content || data.text || data.previewLine || '');
+  const senderName = htmlEscape(safeText(data.senderName || data.ownerName, 'Akasha Cube'));
+  const recipientName = htmlEscape(safeText(data.recipientName, '你'));
+  const openDate = formatDate(resolveSendDate(data));
+  const appUrl = safeText(process.env.AKASHA_APP_URL, DEFAULT_APP_URL);
+  const coverImageUrl = safeText(data.coverImageUrl || data.photoUrl || data.attachmentImageUrl, '');
+  const audioUrl = safeText(data.audioUrl, '');
+  const videoUrl = safeText(data.videoUrl, '');
+
+  const imageBlock = coverImageUrl
+    ? `<div style="margin:22px 0"><img src="${htmlEscape(coverImageUrl)}" alt="capsule image" style="width:100%;max-width:520px;border-radius:18px;display:block"/></div>`
+    : '';
+  const mediaBlock = [
+    audioUrl ? `<p><a href="${htmlEscape(audioUrl)}" style="color:#b66b2b">聽這段語音</a></p>` : '',
+    videoUrl ? `<p><a href="${htmlEscape(videoUrl)}" style="color:#b66b2b">看這段影片</a></p>` : '',
+  ].join('');
+
+  return `
+  <!doctype html>
+  <html>
+  <body style="margin:0;padding:0;background:#120c08;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#3e2b22">
+    <div style="max-width:640px;margin:0 auto;padding:28px 18px">
+      <div style="background:#fff4df;border-radius:28px;padding:30px 24px;border:1px solid #e8c99d;box-shadow:0 18px 60px rgba(0,0,0,.28)">
+        <p style="margin:0 0 10px;color:#9a6a35;font-weight:700;letter-spacing:.08em;font-size:12px;text-transform:uppercase">Akasha Cube · Time Capsule</p>
+        <h1 style="margin:0;color:#3a2417;font-size:30px;line-height:1.18">${title}</h1>
+        <p style="margin:12px 0 0;color:#7b5b3c;font-size:14px;line-height:1.6">${senderName} 在 ${openDate} 留給 ${recipientName} 的一封信。</p>
+        ${imageBlock}
+        <div style="margin-top:24px;padding:22px;border-radius:22px;background:#f7e2bf;border:1px solid rgba(90,55,20,.14);font-size:16px;line-height:1.85;color:#4b3324">
+          ${content}
+        </div>
+        ${mediaBlock ? `<div style="margin-top:20px;font-size:15px">${mediaBlock}</div>` : ''}
+        <div style="margin-top:28px;padding-top:18px;border-top:1px solid rgba(90,55,20,.14);color:#8b6746;font-size:13px;line-height:1.6">
+          這封信由 Akasha Cube 在約定的時間送達。<br/>
+          <a href="${htmlEscape(appUrl)}" style="color:#b66b2b;text-decoration:none;font-weight:700">Open Akasha Cube</a>
+        </div>
+      </div>
+      <p style="text-align:center;color:#b59c7b;font-size:12px;margin-top:18px">Capsule ID ${htmlEscape(capsuleId)}</p>
+    </div>
+  </body>
+  </html>`;
+}
+
+function buildCapsuleEmailText({ data }) {
+  const title = safeText(data.title || data.subject, '一封來自過去的信');
+  const content = safeText(data.content || data.text || data.previewLine, '這封信沒有留下文字，但它帶著一段被保存的心意。');
+  const senderName = safeText(data.senderName || data.ownerName, 'Akasha Cube');
+  const recipientName = safeText(data.recipientName, '你');
+  const openDate = formatDate(resolveSendDate(data));
+  return `${title}\n\n${senderName} 在 ${openDate} 留給 ${recipientName} 的一封信。\n\n${content}\n\nAkasha Cube`;
+}
+
+async function sendEmailWithResend({ to, subject, html, text }) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) throw new Error('RESEND_API_KEY is missing');
+
+  const from = process.env.CAPSULE_FROM_EMAIL || DEFAULT_FROM;
+
+  const response = await axios.post(
+    'https://api.resend.com/emails',
+    { from, to, subject, html, text },
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 20000,
+    }
+  );
+
+  return response.data;
+}
+
+async function markCapsuleSending(docRef) {
+  await docRef.set(
+    {
+      status: 'sending',
+      deliveryStatus: 'sending',
+      emailStatus: 'sending',
+      emailAttemptCount: admin.firestore.FieldValue.increment(1),
+      lastEmailAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+async function markCapsuleSent(docRef, result) {
+  await docRef.set(
+    {
+      status: 'sent',
+      deliveryStatus: 'sent',
+      emailStatus: 'sent',
+      emailProvider: 'resend',
+      emailProviderId: result?.id || '',
+      sentAt: admin.firestore.FieldValue.serverTimestamp(),
+      deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastError: '',
+    },
+    { merge: true }
+  );
+}
+
+async function markCapsuleFailed(docRef, error) {
+  const message = error?.response?.data
+    ? JSON.stringify(error.response.data).slice(0, 900)
+    : String(error?.message || error).slice(0, 900);
+
+  await docRef.set(
+    {
+      status: 'pending',
+      deliveryStatus: 'failed',
+      emailStatus: 'retry',
+      lastError: message,
+      lastFailedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+async function writeDeliveryLog({ capsuleId, status, recipientEmail, result, error }) {
+  await db.collection('email_delivery_logs').add({
+    capsuleId,
+    status,
+    recipientEmail: recipientEmail || '',
+    provider: 'resend',
+    providerResult: result || null,
+    error: error ? String(error?.message || error).slice(0, 900) : '',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+async function sendCapsuleNow(doc) {
+  const data = doc.data() || {};
+  const capsuleId = doc.id;
+  const recipientEmail = safeText(data.recipientEmail, '');
+
+  if (!recipientEmail) {
+    throw new Error('recipientEmail is missing');
+  }
+
+  const subject = safeText(data.emailSubject || data.title || data.subject, '一封來自過去的時間膠囊');
+  const html = buildCapsuleEmailHtml({ capsuleId, data });
+  const text = buildCapsuleEmailText({ data });
+  const docRef = db.collection('capsules').doc(capsuleId);
+
+  await markCapsuleSending(docRef);
+
+  try {
+    const result = await sendEmailWithResend({
+      to: recipientEmail,
+      subject,
+      html,
+      text,
+    });
+
+    await markCapsuleSent(docRef, result);
+    await writeDeliveryLog({ capsuleId, status: 'sent', recipientEmail, result });
+    return { capsuleId, status: 'sent', providerResult: result };
+  } catch (error) {
+    await markCapsuleFailed(docRef, error);
+    await writeDeliveryLog({ capsuleId, status: 'failed', recipientEmail, error });
+    throw error;
+  }
+}
+
+async function findDueCapsules(limit = 40) {
+  const now = nowDate();
+  const statuses = ['queued', 'pending', 'email_queued', 'retry'];
+  const snap = await db
+    .collection('capsules')
+    .where('emailStatus', 'in', statuses)
+    .limit(limit)
+    .get();
+
+  return snap.docs.filter((doc) => isDueSendOnDay(doc.data(), now));
+}
+
+async function processDueCapsules(options = {}) {
+  const limit = Number(options.limit || process.env.EMAIL_QUEUE_BATCH_SIZE || 40);
+  const docs = await findDueCapsules(limit);
+  const results = [];
+
+  for (const doc of docs) {
+    try {
+      const result = await sendCapsuleNow(doc);
+      results.push(result);
+    } catch (error) {
+      results.push({
+        capsuleId: doc.id,
+        status: 'failed',
+        error: error?.response?.data || error?.message || String(error),
+      });
+    }
+  }
+
+  return {
+    checkedAt: new Date().toISOString(),
+    dueCount: docs.length,
+    results,
+  };
+}
+
+async function sendOneCapsule(capsuleId) {
+  const doc = await db.collection('capsules').doc(capsuleId).get();
+  if (!doc.exists) throw new Error('Capsule not found');
+  return sendCapsuleNow(doc);
+}
+
+function startEmailQueueWorker() {
+  if (workerStarted) return;
+  if (String(process.env.EMAIL_WORKER_ENABLED || 'true').toLowerCase() === 'false') {
+    console.log('[EmailQueue] worker disabled');
+    return;
+  }
+
+  workerStarted = true;
+  const intervalMs = Number(process.env.EMAIL_QUEUE_INTERVAL_MS || 60000);
+
+  console.log(`[EmailQueue] worker started interval=${intervalMs}ms`);
+
+  const run = async () => {
+    if (workerBusy) return;
+    workerBusy = true;
+    try {
+      const result = await processDueCapsules();
+      if (result.dueCount > 0) {
+        console.log('[EmailQueue] processed', JSON.stringify(result));
+      }
+    } catch (error) {
+      console.error('[EmailQueue] worker error:', error?.response?.data || error?.message || error);
+    } finally {
+      workerBusy = false;
+    }
+  };
+
+  setTimeout(run, 5000);
+  setInterval(run, intervalMs);
+}
+
+module.exports = {
+  processDueCapsules,
+  sendOneCapsule,
+  startEmailQueueWorker,
+  isDueSendOnDay,
+};
