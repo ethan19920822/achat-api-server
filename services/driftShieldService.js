@@ -1,3 +1,101 @@
+const OpenAI = require("openai");
+
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+async function shieldBottle({
+  title,
+  content,
+}) {
+  const prompt = `
+你是 Akasha Drift Shield。
+
+請將下面故事匿名化。
+
+規則：
+
+1.
+所有真人姓名
+全部改成：
+某人
+朋友
+家人
+老師
+同事
+陌生人
+
+不要留下任何真實姓名。
+
+2.
+所有城市
+學校
+公司
+店家
+醫院
+地名
+
+全部改成：
+
+某個城市
+某間公司
+某間學校
+某間咖啡廳
+某個地方
+
+3.
+
+不要修改故事情緒。
+
+不要修改文筆。
+
+不要修改故事內容。
+
+只做匿名。
+
+4.
+
+另外估算髒話比例。
+
+請回傳：
+
+{
+"title":"",
+"content":"",
+"dirtyScore":0~10
+}
+
+title:
+${title}
+
+content:
+${content}
+`;
+
+  const completion =
+    await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.1,
+      messages: [
+        {
+          role: "system",
+          content: prompt,
+        },
+      ],
+      response_format: {
+        type: "json_object",
+      },
+    });
+
+  return JSON.parse(
+    completion.choices[0].message.content
+  );
+}
+
+module.exports = {
+  shieldBottle,
+};
+
 const axios = require('axios');
 require('dotenv').config();
 
