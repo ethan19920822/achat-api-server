@@ -1,101 +1,3 @@
-const OpenAI = require("openai");
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-async function shieldBottle({
-  title,
-  content,
-}) {
-  const prompt = `
-你是 Akasha Drift Shield。
-
-請將下面故事匿名化。
-
-規則：
-
-1.
-所有真人姓名
-全部改成：
-某人
-朋友
-家人
-老師
-同事
-陌生人
-
-不要留下任何真實姓名。
-
-2.
-所有城市
-學校
-公司
-店家
-醫院
-地名
-
-全部改成：
-
-某個城市
-某間公司
-某間學校
-某間咖啡廳
-某個地方
-
-3.
-
-不要修改故事情緒。
-
-不要修改文筆。
-
-不要修改故事內容。
-
-只做匿名。
-
-4.
-
-另外估算髒話比例。
-
-請回傳：
-
-{
-"title":"",
-"content":"",
-"dirtyScore":0~10
-}
-
-title:
-${title}
-
-content:
-${content}
-`;
-
-  const completion =
-    await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.1,
-      messages: [
-        {
-          role: "system",
-          content: prompt,
-        },
-      ],
-      response_format: {
-        type: "json_object",
-      },
-    });
-
-  return JSON.parse(
-    completion.choices[0].message.content
-  );
-}
-
-module.exports = {
-  shieldBottle,
-};
-
 const axios = require('axios');
 require('dotenv').config();
 
@@ -136,6 +38,11 @@ function calcPenaltyFromRatio(ratio) {
   return Math.max(-9, -Math.floor(r * 10));
 }
 
+function exposureWeightFromPenalty(oceanPenalty) {
+  const p = Math.abs(clampNumber(oceanPenalty, -9, 0, 0));
+  return clampNumber(1 - p * 0.1, 0.1, 1, 1);
+}
+
 function extractJsonObject(text) {
   const raw = safeText(text);
   if (!raw) return null;
@@ -162,6 +69,7 @@ function fallbackShield({ title, content, reason = 'fallback' }) {
     anonymousChanged: false,
     profanityRatio: 0,
     oceanPenalty: 0,
+    exposureWeight: 1,
     shieldVersion: SHIELD_VERSION,
     fallback: true,
     fallbackReason: reason,
@@ -183,7 +91,11 @@ Your only jobs:
    - schools
    - companies
    - stores / restaurants / venues
+   - hospitals / clinics
    - addresses
+   - phone numbers
+   - email addresses
+   - social media handles
 3. Replace them with soft generic wording in the same language.
    Examples:
    小明 -> 一位朋友
@@ -193,16 +105,22 @@ Your only jobs:
    台北車站 -> 一個很熱鬧的地方
    台積電 -> 一間公司
    成功高中 -> 一所學校
+   星巴克 -> 一間咖啡店
 4. Do NOT treat laughter or emotional repetition as profanity.
-   哈哈哈、啊啊啊、哭哭、XDDD are NOT profanity.
+   哈哈哈、啊啊啊、哭哭、XDDD、LOL are NOT profanity.
 5. Calculate profanityRatio from 0 to 1.
-   Only count real profanity, insults, abusive words, or vulgar attacks.
-   Do not count normal sadness, anger, laughter, crying, or emotional intensity.
+   Only count real profanity, insults, abusive words, vulgar attacks, or hateful abuse.
+   Do not count normal sadness, anger, grief, laughter, crying, or emotional intensity.
 6. oceanPenalty:
    profanityRatio < 0.10 => 0
    0.10 to 0.199 => -1
    0.20 to 0.299 => -2
-   ...
+   0.30 to 0.399 => -3
+   0.40 to 0.499 => -4
+   0.50 to 0.599 => -5
+   0.60 to 0.699 => -6
+   0.70 to 0.799 => -7
+   0.80 to 0.899 => -8
    >= 0.90 => -9
 
 Return ONLY valid JSON:
@@ -272,6 +190,7 @@ async function callDeepSeekShield({ userId, title, content }) {
         temperature: 0.15,
         max_tokens: 900,
         stream: false,
+        response_format: { type: 'json_object' },
       },
       {
         headers: {
@@ -361,13 +280,16 @@ async function shieldBottle({ userId, title, content }) {
     anonymousChanged: Boolean(parsed.anonymousChanged),
     profanityRatio,
     oceanPenalty,
+    exposureWeight: exposureWeightFromPenalty(oceanPenalty),
     shieldVersion: SHIELD_VERSION,
     fallback: false,
+    fallbackReason: '',
   };
 }
 
 module.exports = {
   shieldBottle,
   calcPenaltyFromRatio,
+  exposureWeightFromPenalty,
   SHIELD_VERSION,
 };
