@@ -13,6 +13,7 @@ app.use(bodyParser.json({ limit: '10mb' }));
 
 const chatRoutes = require('./routes/chat');
 const capsuleRoutes = require('./routes/capsule');
+const driftRoutes = require('./routes/drift');
 const { startEmailQueueWorker } = require('./services/capsuleDeliveryWorker');
 
 const {
@@ -22,6 +23,7 @@ const {
 
 app.use('/chat', chatRoutes);
 app.use('/capsule', capsuleRoutes);
+app.use('/drift', driftRoutes);
 
 app.post('/vision', async (req, res) => {
   try {
