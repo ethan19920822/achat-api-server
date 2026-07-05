@@ -49,7 +49,7 @@ function buildMasterSystemPrompt(memoryProfile = {}) {
   }
 
   if (memoryProfile.recentMemories) {
-    memoryLines.push(`最近三天聊天記憶：\n${limitText(memoryProfile.recentMemories, 700)}`);
+    memoryLines.push(`最近七天聊天記憶：\n${limitText(memoryProfile.recentMemories, 700)}`);
   }
 
   if (memoryProfile.diaryMemories) {
