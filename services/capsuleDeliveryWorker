@@ -6,8 +6,11 @@ function getServiceAccountFromEnv() {
   if (!raw) {
     throw new Error('FIREBASE_SERVICE_ACCOUNT is missing');
   }
+
   const parsed = JSON.parse(raw);
-  if (parsed.private_key) parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  if (parsed.private_key) {
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  }
   return parsed;
 }
 
@@ -24,6 +27,8 @@ const db = initFirebaseAdmin();
 
 const DEFAULT_FROM = 'Akasha Cube <onboarding@resend.dev>';
 const DEFAULT_APP_URL = 'https://akashacube.vip';
+const DEFAULT_MAX_EMAIL_ATTEMPTS = 3;
+
 let workerStarted = false;
 let workerBusy = false;
 
@@ -65,7 +70,9 @@ function htmlEscape(value) {
 }
 
 function capsuleMode(data) {
-  return String(data.capsuleMode || data.mode || data.creationMode || 'send_on_day').toLowerCase();
+  return String(
+    data.capsuleMode || data.mode || data.creationMode || 'send_on_day'
+  ).toLowerCase();
 }
 
 function resolveSendDate(data) {
@@ -77,15 +84,51 @@ function resolveSendDate(data) {
   );
 }
 
+function maxEmailAttempts() {
+  const configured = Number(process.env.EMAIL_MAX_ATTEMPTS);
+  if (Number.isFinite(configured) && configured >= 1) {
+    return Math.floor(configured);
+  }
+  return DEFAULT_MAX_EMAIL_ATTEMPTS;
+}
+
+function currentAttemptCount(data) {
+  const count = Number(data.emailAttemptCount || 0);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
+function isValidEmail(value) {
+  const email = safeText(value, '');
+  if (!email || email.length > 320) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function isAlreadyCompleted(data) {
+  const status = String(data.status || '').toLowerCase();
+  const deliveryStatus = String(data.deliveryStatus || '').toLowerCase();
+  const emailStatus = String(data.emailStatus || '').toLowerCase();
+
+  return (
+    ['sent', 'opened', 'delivered', 'cancelled', 'deleted'].includes(status) ||
+    ['sent', 'delivered'].includes(deliveryStatus) ||
+    ['sent', 'delivered', 'permanent_failed'].includes(emailStatus)
+  );
+}
+
 function isDueSendOnDay(data, now = nowDate()) {
   const mode = capsuleMode(data);
-  if (mode !== 'send_on_day' && mode !== 'sendonday' && mode !== 'date') return false;
+  if (mode !== 'send_on_day' && mode !== 'sendonday' && mode !== 'date') {
+    return false;
+  }
 
-  const status = String(data.status || '').toLowerCase();
-  if (['sent', 'opened', 'delivered', 'cancelled', 'deleted'].includes(status)) return false;
+  if (isAlreadyCompleted(data)) return false;
 
   const emailStatus = String(data.emailStatus || '').toLowerCase();
-  if (!['queued', 'pending', 'email_queued', 'retry'].includes(emailStatus)) return false;
+  if (!['queued', 'pending', 'email_queued', 'retry'].includes(emailStatus)) {
+    return false;
+  }
+
+  if (currentAttemptCount(data) >= maxEmailAttempts()) return false;
 
   const date = resolveSendDate(data);
   if (!date) return false;
@@ -93,27 +136,49 @@ function isDueSendOnDay(data, now = nowDate()) {
 }
 
 function plainTextToHtml(text) {
-  const safe = htmlEscape(text || '這封信沒有留下文字，但它帶著一段被保存的心意。');
+  const safe = htmlEscape(
+    text || '這封信沒有留下文字，但它帶著一段被保存的心意。'
+  );
   return safe.replace(/\n/g, '<br/>');
 }
 
 function buildCapsuleEmailHtml({ capsuleId, data }) {
-  const title = htmlEscape(safeText(data.title || data.subject, '一封來自過去的信'));
-  const content = plainTextToHtml(data.content || data.text || data.previewLine || '');
-  const senderName = htmlEscape(safeText(data.senderName || data.ownerName, 'Akasha Cube'));
+  const title = htmlEscape(
+    safeText(data.title || data.subject, '一封來自過去的信')
+  );
+  const content = plainTextToHtml(
+    data.content || data.text || data.previewLine || ''
+  );
+  const senderName = htmlEscape(
+    safeText(data.senderName || data.ownerName, 'Akasha Cube')
+  );
   const recipientName = htmlEscape(safeText(data.recipientName, '你'));
   const openDate = formatDate(resolveSendDate(data));
   const appUrl = safeText(process.env.AKASHA_APP_URL, DEFAULT_APP_URL);
-  const coverImageUrl = safeText(data.coverImageUrl || data.photoUrl || data.attachmentImageUrl, '');
+  const coverImageUrl = safeText(
+    data.coverImageUrl || data.photoUrl || data.attachmentImageUrl,
+    ''
+  );
   const audioUrl = safeText(data.audioUrl, '');
   const videoUrl = safeText(data.videoUrl, '');
 
   const imageBlock = coverImageUrl
-    ? `<div style="margin:22px 0"><img src="${htmlEscape(coverImageUrl)}" alt="capsule image" style="width:100%;max-width:520px;border-radius:18px;display:block"/></div>`
+    ? `<div style="margin:22px 0"><img src="${htmlEscape(
+        coverImageUrl
+      )}" alt="capsule image" style="width:100%;max-width:520px;border-radius:18px;display:block"/></div>`
     : '';
+
   const mediaBlock = [
-    audioUrl ? `<p><a href="${htmlEscape(audioUrl)}" style="color:#b66b2b">聽這段語音</a></p>` : '',
-    videoUrl ? `<p><a href="${htmlEscape(videoUrl)}" style="color:#b66b2b">看這段影片</a></p>` : '',
+    audioUrl
+      ? `<p><a href="${htmlEscape(
+          audioUrl
+        )}" style="color:#b66b2b">聽這段語音</a></p>`
+      : '',
+    videoUrl
+      ? `<p><a href="${htmlEscape(
+          videoUrl
+        )}" style="color:#b66b2b">看這段影片</a></p>`
+      : '',
   ].join('');
 
   return `
@@ -129,24 +194,42 @@ function buildCapsuleEmailHtml({ capsuleId, data }) {
         <div style="margin-top:24px;padding:22px;border-radius:22px;background:#f7e2bf;border:1px solid rgba(90,55,20,.14);font-size:16px;line-height:1.85;color:#4b3324">
           ${content}
         </div>
-        ${mediaBlock ? `<div style="margin-top:20px;font-size:15px">${mediaBlock}</div>` : ''}
+        ${
+          mediaBlock
+            ? `<div style="margin-top:20px;font-size:15px">${mediaBlock}</div>`
+            : ''
+        }
         <div style="margin-top:28px;padding-top:18px;border-top:1px solid rgba(90,55,20,.14);color:#8b6746;font-size:13px;line-height:1.6">
           這封信由 Akasha Cube 在約定的時間送達。<br/>
-          <a href="${htmlEscape(appUrl)}" style="color:#b66b2b;text-decoration:none;font-weight:700">Open Akasha Cube</a>
+          <a href="${htmlEscape(
+            appUrl
+          )}" style="color:#b66b2b;text-decoration:none;font-weight:700">Open Akasha Cube</a>
         </div>
       </div>
-      <p style="text-align:center;color:#b59c7b;font-size:12px;margin-top:18px">Capsule ID ${htmlEscape(capsuleId)}</p>
+      <p style="text-align:center;color:#b59c7b;font-size:12px;margin-top:18px">Capsule ID ${htmlEscape(
+        capsuleId
+      )}</p>
     </div>
   </body>
   </html>`;
 }
 
 function buildCapsuleEmailText({ data }) {
-  const title = safeText(data.title || data.subject, '一封來自過去的信');
-  const content = safeText(data.content || data.text || data.previewLine, '這封信沒有留下文字，但它帶著一段被保存的心意。');
-  const senderName = safeText(data.senderName || data.ownerName, 'Akasha Cube');
+  const title = safeText(
+    data.title || data.subject,
+    '一封來自過去的信'
+  );
+  const content = safeText(
+    data.content || data.text || data.previewLine,
+    '這封信沒有留下文字，但它帶著一段被保存的心意。'
+  );
+  const senderName = safeText(
+    data.senderName || data.ownerName,
+    'Akasha Cube'
+  );
   const recipientName = safeText(data.recipientName, '你');
   const openDate = formatDate(resolveSendDate(data));
+
   return `${title}\n\n${senderName} 在 ${openDate} 留給 ${recipientName} 的一封信。\n\n${content}\n\nAkasha Cube`;
 }
 
@@ -169,6 +252,92 @@ async function sendEmailWithResend({ to, subject, html, text }) {
   );
 
   return response.data;
+}
+
+function errorMessage(error) {
+  if (error?.response?.data) {
+    return JSON.stringify(error.response.data).slice(0, 900);
+  }
+  return String(error?.message || error).slice(0, 900);
+}
+
+function classifyDeliveryError(error) {
+  const statusCode = Number(error?.response?.status || 0);
+  const code = String(error?.code || '').toUpperCase();
+  const message = errorMessage(error).toLowerCase();
+
+  if (
+    message.includes('recipientemail is missing') ||
+    message.includes('recipient email is missing')
+  ) {
+    return {
+      permanent: true,
+      reason: 'recipient_email_missing',
+      statusCode,
+    };
+  }
+
+  if (
+    message.includes('recipientemail is invalid') ||
+    message.includes('invalid email') ||
+    message.includes('email address is invalid')
+  ) {
+    return {
+      permanent: true,
+      reason: 'recipient_email_invalid',
+      statusCode,
+    };
+  }
+
+  if ([400, 401, 403, 404, 405, 409, 410, 413, 415, 422].includes(statusCode)) {
+    return {
+      permanent: true,
+      reason: `provider_http_${statusCode}`,
+      statusCode,
+    };
+  }
+
+  if ([408, 425, 429, 500, 502, 503, 504].includes(statusCode)) {
+    return {
+      permanent: false,
+      reason: `provider_http_${statusCode}`,
+      statusCode,
+    };
+  }
+
+  if (
+    ['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND'].includes(
+      code
+    )
+  ) {
+    return {
+      permanent: false,
+      reason: code.toLowerCase(),
+      statusCode,
+    };
+  }
+
+  if (message.includes('timeout') || message.includes('temporarily unavailable')) {
+    return {
+      permanent: false,
+      reason: 'temporary_provider_error',
+      statusCode,
+    };
+  }
+
+  if (statusCode >= 400 && statusCode < 500) {
+    return {
+      permanent: true,
+      reason: `provider_http_${statusCode}`,
+      statusCode,
+    };
+  }
+
+  return {
+    permanent: false,
+    reason: 'unknown_retryable_error',
+    statusCode,
+  };
 }
 
 async function markCapsuleSending(docRef) {
@@ -197,22 +366,22 @@ async function markCapsuleSent(docRef, result) {
       deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       lastError: '',
+      permanentFailureReason: '',
     },
     { merge: true }
   );
 }
 
-async function markCapsuleFailed(docRef, error) {
-  const message = error?.response?.data
-    ? JSON.stringify(error.response.data).slice(0, 900)
-    : String(error?.message || error).slice(0, 900);
-
+async function markCapsuleRetry(docRef, error, attemptCount, classification) {
   await docRef.set(
     {
       status: 'pending',
       deliveryStatus: 'failed',
       emailStatus: 'retry',
-      lastError: message,
+      lastError: errorMessage(error),
+      lastFailureReason: classification.reason,
+      lastFailureStatusCode: classification.statusCode || null,
+      emailAttemptCount: attemptCount,
       lastFailedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     },
@@ -220,14 +389,45 @@ async function markCapsuleFailed(docRef, error) {
   );
 }
 
-async function writeDeliveryLog({ capsuleId, status, recipientEmail, result, error }) {
+async function markCapsulePermanentFailed(
+  docRef,
+  error,
+  attemptCount,
+  classification
+) {
+  await docRef.set(
+    {
+      deliveryStatus: 'failed',
+      emailStatus: 'permanent_failed',
+      lastError: errorMessage(error),
+      permanentFailureReason: classification.reason,
+      lastFailureStatusCode: classification.statusCode || null,
+      emailAttemptCount: attemptCount,
+      permanentlyFailedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+async function writeDeliveryLog({
+  capsuleId,
+  status,
+  recipientEmail,
+  result,
+  error,
+  attemptCount,
+  failureReason,
+}) {
   await db.collection('email_delivery_logs').add({
     capsuleId,
     status,
     recipientEmail: recipientEmail || '',
     provider: 'resend',
     providerResult: result || null,
-    error: error ? String(error?.message || error).slice(0, 900) : '',
+    error: error ? errorMessage(error) : '',
+    attemptCount: Number(attemptCount || 0),
+    failureReason: failureReason || '',
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 }
@@ -235,16 +435,118 @@ async function writeDeliveryLog({ capsuleId, status, recipientEmail, result, err
 async function sendCapsuleNow(doc) {
   const data = doc.data() || {};
   const capsuleId = doc.id;
+  const docRef = db.collection('capsules').doc(capsuleId);
   const recipientEmail = safeText(data.recipientEmail, '');
+  const previousAttemptCount = currentAttemptCount(data);
+  const maxAttempts = maxEmailAttempts();
 
-  if (!recipientEmail) {
-    throw new Error('recipientEmail is missing');
+  if (isAlreadyCompleted(data)) {
+    return {
+      capsuleId,
+      status: 'skipped',
+      reason: 'already_completed',
+    };
   }
 
-  const subject = safeText(data.emailSubject || data.title || data.subject, '一封來自過去的時間膠囊');
+  if (previousAttemptCount >= maxAttempts) {
+    const error = new Error(
+      `Maximum email attempts reached (${previousAttemptCount}/${maxAttempts})`
+    );
+    const classification = {
+      permanent: true,
+      reason: 'max_attempts_reached',
+      statusCode: 0,
+    };
+
+    await markCapsulePermanentFailed(
+      docRef,
+      error,
+      previousAttemptCount,
+      classification
+    );
+    await writeDeliveryLog({
+      capsuleId,
+      status: 'permanent_failed',
+      recipientEmail,
+      error,
+      attemptCount: previousAttemptCount,
+      failureReason: classification.reason,
+    });
+
+    return {
+      capsuleId,
+      status: 'permanent_failed',
+      error: error.message,
+    };
+  }
+
+  if (!recipientEmail) {
+    const error = new Error('recipientEmail is missing');
+    const classification = {
+      permanent: true,
+      reason: 'recipient_email_missing',
+      statusCode: 0,
+    };
+
+    await markCapsulePermanentFailed(
+      docRef,
+      error,
+      previousAttemptCount,
+      classification
+    );
+    await writeDeliveryLog({
+      capsuleId,
+      status: 'permanent_failed',
+      recipientEmail: '',
+      error,
+      attemptCount: previousAttemptCount,
+      failureReason: classification.reason,
+    });
+
+    return {
+      capsuleId,
+      status: 'permanent_failed',
+      error: error.message,
+    };
+  }
+
+  if (!isValidEmail(recipientEmail)) {
+    const error = new Error('recipientEmail is invalid');
+    const classification = {
+      permanent: true,
+      reason: 'recipient_email_invalid',
+      statusCode: 0,
+    };
+
+    await markCapsulePermanentFailed(
+      docRef,
+      error,
+      previousAttemptCount,
+      classification
+    );
+    await writeDeliveryLog({
+      capsuleId,
+      status: 'permanent_failed',
+      recipientEmail,
+      error,
+      attemptCount: previousAttemptCount,
+      failureReason: classification.reason,
+    });
+
+    return {
+      capsuleId,
+      status: 'permanent_failed',
+      error: error.message,
+    };
+  }
+
+  const subject = safeText(
+    data.emailSubject || data.title || data.subject,
+    '一封來自過去的時間膠囊'
+  );
   const html = buildCapsuleEmailHtml({ capsuleId, data });
   const text = buildCapsuleEmailText({ data });
-  const docRef = db.collection('capsules').doc(capsuleId);
+  const attemptCount = previousAttemptCount + 1;
 
   await markCapsuleSending(docRef);
 
@@ -257,11 +559,56 @@ async function sendCapsuleNow(doc) {
     });
 
     await markCapsuleSent(docRef, result);
-    await writeDeliveryLog({ capsuleId, status: 'sent', recipientEmail, result });
-    return { capsuleId, status: 'sent', providerResult: result };
+    await writeDeliveryLog({
+      capsuleId,
+      status: 'sent',
+      recipientEmail,
+      result,
+      attemptCount,
+    });
+
+    return {
+      capsuleId,
+      status: 'sent',
+      providerResult: result,
+    };
   } catch (error) {
-    await markCapsuleFailed(docRef, error);
-    await writeDeliveryLog({ capsuleId, status: 'failed', recipientEmail, error });
+    const classification = classifyDeliveryError(error);
+    const reachedLimit = attemptCount >= maxAttempts;
+    const permanentlyFailed = classification.permanent || reachedLimit;
+    const failureReason = reachedLimit
+      ? 'max_attempts_reached'
+      : classification.reason;
+
+    if (permanentlyFailed) {
+      await markCapsulePermanentFailed(
+        docRef,
+        error,
+        attemptCount,
+        {
+          ...classification,
+          permanent: true,
+          reason: failureReason,
+        }
+      );
+    } else {
+      await markCapsuleRetry(
+        docRef,
+        error,
+        attemptCount,
+        classification
+      );
+    }
+
+    await writeDeliveryLog({
+      capsuleId,
+      status: permanentlyFailed ? 'permanent_failed' : 'retry',
+      recipientEmail,
+      error,
+      attemptCount,
+      failureReason,
+    });
+
     throw error;
   }
 }
@@ -269,6 +616,7 @@ async function sendCapsuleNow(doc) {
 async function findDueCapsules(limit = 40) {
   const now = nowDate();
   const statuses = ['queued', 'pending', 'email_queued', 'retry'];
+
   const snap = await db
     .collection('capsules')
     .where('emailStatus', 'in', statuses)
@@ -279,7 +627,9 @@ async function findDueCapsules(limit = 40) {
 }
 
 async function processDueCapsules(options = {}) {
-  const limit = Number(options.limit || process.env.EMAIL_QUEUE_BATCH_SIZE || 40);
+  const limit = Number(
+    options.limit || process.env.EMAIL_QUEUE_BATCH_SIZE || 40
+  );
   const docs = await findDueCapsules(limit);
   const results = [];
 
@@ -309,28 +659,61 @@ async function sendOneCapsule(capsuleId) {
   return sendCapsuleNow(doc);
 }
 
+function logQueueResult(result) {
+  const counts = result.results.reduce(
+    (summary, item) => {
+      const key = item.status || 'unknown';
+      summary[key] = (summary[key] || 0) + 1;
+      return summary;
+    },
+    {}
+  );
+
+  console.log(
+    '[EmailQueue] processed',
+    JSON.stringify({
+      checkedAt: result.checkedAt,
+      dueCount: result.dueCount,
+      counts,
+      results: result.results,
+    })
+  );
+}
+
 function startEmailQueueWorker() {
   if (workerStarted) return;
-  if (String(process.env.EMAIL_WORKER_ENABLED || 'true').toLowerCase() === 'false') {
+
+  if (
+    String(process.env.EMAIL_WORKER_ENABLED || 'true').toLowerCase() ===
+    'false'
+  ) {
     console.log('[EmailQueue] worker disabled');
     return;
   }
 
   workerStarted = true;
-  const intervalMs = Number(process.env.EMAIL_QUEUE_INTERVAL_MS || 60000);
+  const intervalMs = Number(
+    process.env.EMAIL_QUEUE_INTERVAL_MS || 60000
+  );
 
-  console.log(`[EmailQueue] worker started interval=${intervalMs}ms`);
+  console.log(
+    `[EmailQueue] worker started interval=${intervalMs}ms maxAttempts=${maxEmailAttempts()}`
+  );
 
   const run = async () => {
     if (workerBusy) return;
+
     workerBusy = true;
     try {
       const result = await processDueCapsules();
       if (result.dueCount > 0) {
-        console.log('[EmailQueue] processed', JSON.stringify(result));
+        logQueueResult(result);
       }
     } catch (error) {
-      console.error('[EmailQueue] worker error:', error?.response?.data || error?.message || error);
+      console.error(
+        '[EmailQueue] worker error:',
+        error?.response?.data || error?.message || error
+      );
     } finally {
       workerBusy = false;
     }
