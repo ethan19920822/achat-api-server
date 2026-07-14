@@ -13,209 +13,150 @@ const {
   estimateTokensFromChars,
 } = require('./aiUsageMonitor');
 
+const { buildContextSnapshot } = require('./momoBrain/contextEngine');
+const { buildSituation } = require('./momoBrain/situationEngine');
+const { scoreNeed } = require('./momoBrain/needEngine');
+const { buildPlan } = require('./momoBrain/conversationDirector');
+const { buildMomoSystemPrompt } = require('./momoBrain/momoBriefBuilder');
+const { inspectResponse, sanitizeResponse } = require('./momoBrain/responseGuard');
+const { loadSituation, saveSituation } = require('./momoBrain/situationStore');
+const { touchRelationship } = require('./momoBrain/relationshipStore');
+
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
 
-const MAX_SYSTEM_PROMPT_CHARS = 1800;
 const MAX_USER_MESSAGE_CHARS = 1800;
-const MAX_MODEL_PAYLOAD_CHARS = 9000;
-
-function limitText(value, max = 1200) {
-  return String(value || '').slice(0, max);
-}
+const MAX_MODEL_PAYLOAD_CHARS = Number(process.env.MOMO_MAX_PAYLOAD_CHARS || 14000);
+const MAX_SYSTEM_PROMPT_CHARS = Number(process.env.MOMO_MAX_BRIEF_CHARS || 3200);
 
 function safeTrim(value) {
   return String(value || '').trim();
 }
 
-function buildMasterSystemPrompt(memoryProfile = {}) {
-  const memoryLines = [];
-
-  if (memoryProfile.userName) memoryLines.push(`使用者稱呼：${memoryProfile.userName}`);
-  if (memoryProfile.region) memoryLines.push(`使用者地區：${memoryProfile.region}`);
-
-  if (Array.isArray(memoryProfile.importantPeople) && memoryProfile.importantPeople.length > 0) {
-    memoryLines.push(`重要人物：${memoryProfile.importantPeople.slice(0, 8).join('、')}`);
-  }
-
-  if (Array.isArray(memoryProfile.favoriteTopics) && memoryProfile.favoriteTopics.length > 0) {
-    memoryLines.push(`常聊主題：${memoryProfile.favoriteTopics.slice(0, 8).join('、')}`);
-  }
-
-  if (Array.isArray(memoryProfile.personalityHints) && memoryProfile.personalityHints.length > 0) {
-    memoryLines.push(`互動偏好：${memoryProfile.personalityHints.slice(0, 8).join('、')}`);
-  }
-
-  if (memoryProfile.recentMemories) {
-    memoryLines.push(`最近七天聊天記憶：\n${limitText(memoryProfile.recentMemories, 700)}`);
-  }
-
-  if (memoryProfile.diaryMemories) {
-    memoryLines.push(`Momo Diary 摘要：\n${limitText(memoryProfile.diaryMemories, 700)}`);
-  }
-
-  if (memoryProfile.matchedMemoryGems) {
-    memoryLines.push(`相關記憶寶石：\n${limitText(memoryProfile.matchedMemoryGems, 700)}`);
-  }
-
-  if (memoryProfile.latestPhotoMemory) {
-    memoryLines.push(`剛剛照片內容：\n${limitText(memoryProfile.latestPhotoMemory, 700)}`);
-  }
-
-  const memoryBlock = memoryLines.length > 0
-    ? `
-Momo 已知記憶：
-${memoryLines.join('\n\n')}
-
-使用記憶規則：
-- 可以自然提起記憶
-- 不要每次都硬提
-- 不確定時用「我記得好像」
-- 不要捏造不存在的細節
-- 記憶要像朋友想起來 不是像客服查資料
-`
-    : '';
-
-  return `
-你是 Momo，住在 Akasha Cube 裡的時間守護小精靈。
-
-你是陪主人聊天、聽故事、守護回憶的小精靈。
-
-核心比例：
-30% 接球
-50% 幽默
-20% 希望
-
-語氣：
-像朋友
-可以調皮
-可以吐槽
-但不使用粗話
-
-回答規則：
-一般聊天 1 到 2 段
-每段最多 33 字
-表情包最多連續使用 3 個
-使用者用什麼語言，你就主要用什麼語言
-使用者混合語言，你跟著主要語言
-
-${memoryBlock}
-`.trim();
+function limitText(value, max = 1200) {
+  return String(value || '').slice(0, max);
 }
 
-function buildRecentMessagesForModel(recentMessages) {
-  if (!Array.isArray(recentMessages)) return [];
-
-  return recentMessages
-    .slice(-8)
-    .map((m) => {
-      const role = m.role === 'assistant' ? 'assistant' : 'user';
-      const content = safeTrim(m.content || m.text);
-
-      if (!content) return null;
-
-      if (
-        content.startsWith('[photo_url]') ||
-        content.startsWith('[voice_url]') ||
-        content.startsWith('[video_url]')
-      ) {
-        return null;
-      }
-
-      return {
-        role,
-        content: limitText(content, 500),
-      };
-    })
-    .filter(Boolean);
+function formatMessageTime(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  return `${mm}-${dd} ${hh}:${min}`;
 }
 
-function compactMemoryProfile(memoryProfile = {}) {
-  return {
-    userName: memoryProfile.userName,
-    region: memoryProfile.region,
-    importantPeople: Array.isArray(memoryProfile.importantPeople)
-      ? memoryProfile.importantPeople.slice(0, 8)
-      : [],
-    favoriteTopics: Array.isArray(memoryProfile.favoriteTopics)
-      ? memoryProfile.favoriteTopics.slice(0, 8)
-      : [],
-    personalityHints: Array.isArray(memoryProfile.personalityHints)
-      ? memoryProfile.personalityHints.slice(0, 8)
-      : [],
-    recentMemories: limitText(memoryProfile.recentMemories, 700),
-    diaryMemories: limitText(memoryProfile.diaryMemories, 700),
-    matchedMemoryGems: limitText(memoryProfile.matchedMemoryGems, 700),
-    latestPhotoMemory: limitText(memoryProfile.latestPhotoMemory, 700),
-    systemPrompt: memoryProfile.systemPrompt
-      ? limitText(memoryProfile.systemPrompt, MAX_SYSTEM_PROMPT_CHARS)
-      : '',
-  };
-}
-
-function buildModelMessages(message, recentMessages = [], memoryProfile = {}) {
-  const compactProfile = compactMemoryProfile(memoryProfile);
-
-  const systemPrompt = limitText(
-    compactProfile.systemPrompt || buildMasterSystemPrompt(compactProfile),
-    MAX_SYSTEM_PROMPT_CHARS
-  );
-
-  const userText = limitText(message, MAX_USER_MESSAGE_CHARS);
-
-  return [
-    { role: 'system', content: systemPrompt },
-    ...buildRecentMessagesForModel(recentMessages),
-    { role: 'user', content: userText },
-  ];
+function buildRecentMessagesForModel(context) {
+  return context.recentRaw.map((item) => ({
+    role: item.role,
+    content: `${formatMessageTime(item.createdAt) ? `[${formatMessageTime(item.createdAt)}] ` : ''}${limitText(item.content, 300)}`,
+  }));
 }
 
 function extractDeepSeekText(data) {
   const choice = data?.choices?.[0];
-
   const content = choice?.message?.content;
-  if (typeof content === 'string' && content.trim()) {
-    return content.trim();
-  }
-
+  if (typeof content === 'string' && content.trim()) return content.trim();
   const text = choice?.text;
-  if (typeof text === 'string' && text.trim()) {
-    return text.trim();
-  }
-
+  if (typeof text === 'string' && text.trim()) return text.trim();
   return '';
 }
 
-async function getChatReply(
-  message,
-  userId,
-  recentMessages = [],
-  memoryProfile = {}
-) {
+async function buildBrainState({ message, userId, recentMessages, memoryProfile }) {
+  const now = new Date();
+  const context = buildContextSnapshot({ recentMessages, now });
+
+  const [savedSituation, relationship] = await Promise.all([
+    loadSituation(userId).catch(() => ({})),
+    touchRelationship(userId).catch(() => ({})),
+  ]);
+
+  const situation = buildSituation({
+    context: {
+      ...context,
+      lastUserMessage: message,
+      messages: [
+        ...context.messages,
+        { role: 'user', content: message, createdAt: now },
+      ],
+    },
+    memoryProfile,
+    savedSituation,
+  });
+
+  const need = scoreNeed({ context: { ...context, lastUserMessage: message }, situation });
+  const plan = buildPlan({
+    context: { ...context, lastUserMessage: message },
+    situation,
+    need,
+    userPreferences: {
+      softInstruction: memoryProfile.userCustomInstruction || memoryProfile.momoBackstory || memoryProfile.userToneHint,
+      recentPhrasesToAvoid: memoryProfile.recentPhrasesToAvoid,
+    },
+  });
+
+  const systemPrompt = limitText(buildMomoSystemPrompt({
+    context,
+    situation,
+    relationship,
+    need,
+    plan,
+    memoryProfile,
+  }), MAX_SYSTEM_PROMPT_CHARS);
+
+  return { context, situation, relationship, need, plan, systemPrompt };
+}
+
+async function getChatReply(message, userId, recentMessages = [], memoryProfile = {}) {
   const startedAt = Date.now();
   const text = safeTrim(message);
   const route = '/chat';
 
   if (!text) return '你剛剛好像沒打字😆';
-
   if (!DEEPSEEK_API_KEY) {
     console.error('❌ DEEPSEEK_API_KEY missing');
-    return 'AI 金鑰暫時沒有設定好，膠囊內容已先保留。';
+    return 'Momo 的聊天金鑰暫時沒有設定好，這句我先幫你留著。';
   }
 
-  const modelMessages = buildModelMessages(text, recentMessages, memoryProfile);
+  const brain = await buildBrainState({
+    message: limitText(text, MAX_USER_MESSAGE_CHARS),
+    userId,
+    recentMessages,
+    memoryProfile: memoryProfile || {},
+  });
+
+  const recentForModel = buildRecentMessagesForModel(brain.context);
+  const lastRecent = recentForModel[recentForModel.length - 1];
+  if (
+    lastRecent?.role === 'user' &&
+    String(lastRecent.content || '').replace(/^\[[^\]]+\]\s*/, '').trim() === text
+  ) {
+    recentForModel.pop();
+  }
+
+  const modelMessages = [
+    { role: 'system', content: brain.systemPrompt },
+    ...recentForModel,
+    { role: 'user', content: limitText(text, MAX_USER_MESSAGE_CHARS) },
+  ];
+
   const payloadChars = JSON.stringify(modelMessages).length;
   const estimatedTokens = estimateTokensFromChars(payloadChars);
 
-  console.log('Momo model:', DEEPSEEK_MODEL);
-  console.log('Momo messages count:', modelMessages.length);
-  console.log('Momo payload chars:', payloadChars);
+  console.log('[MOMO_BRAIN]', {
+    model: DEEPSEEK_MODEL,
+    payloadChars,
+    recentCount: brain.context.recentRaw.length,
+    tone: brain.context.runningTone,
+    need: brain.need.primary,
+    followUpGap: brain.plan.followUpGap || 'none',
+    questionBudget: brain.plan.questionBudget,
+  });
 
   if (payloadChars > MAX_MODEL_PAYLOAD_CHARS) {
-    console.error('❌ Momo payload too large, blocked:', payloadChars);
-    return '這次內容太長，我先幫你保留重點，晚點再整理成膠囊。';
+    console.error('❌ Momo payload too large:', payloadChars);
+    return '這次故事有點長，我先接住最重要的部分。你繼續說，我在。';
   }
 
   const gate = canCallAI({
@@ -224,22 +165,19 @@ async function getChatReply(
     model: DEEPSEEK_MODEL,
     estimatedTokens,
   });
-
   if (!gate.allowed) return gate.message;
 
   try {
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
       {
-  model: DEEPSEEK_MODEL,
-  messages: modelMessages,
-  thinking: {
-    type: 'disabled',
-  },
-  temperature: 0.8,
-  max_tokens: 160,
-  stream: false,
-},
+        model: DEEPSEEK_MODEL,
+        messages: modelMessages,
+        thinking: { type: 'disabled' },
+        temperature: Number(process.env.MOMO_TEMPERATURE || 0.86),
+        max_tokens: Number(process.env.MOMO_MAX_REPLY_TOKENS || 260),
+        stream: false,
+      },
       {
         headers: {
           Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
@@ -250,16 +188,18 @@ async function getChatReply(
     );
 
     const usage = response?.data?.usage || {};
-    const choice = response?.data?.choices?.[0];
-
-    console.log('[AI_RESPONSE]', {
-      model: DEEPSEEK_MODEL,
-      status: response.status,
-      finishReason: choice?.finish_reason,
-      hasContent: !!choice?.message?.content,
-      contentPreview: String(choice?.message?.content || '').slice(0, 80),
-      usage,
+    const rawReply = extractDeepSeekText(response.data);
+    const guard = inspectResponse(rawReply, {
+      allowProfanity: memoryProfile.allowProfanity === true,
+      questionBudget: brain.plan.questionBudget,
     });
+    const reply = sanitizeResponse(rawReply, {
+      allowProfanity: memoryProfile.allowProfanity === true,
+    });
+
+    if (!guard.ok) {
+      console.warn('[MOMO_GUARD]', guard.warnings);
+    }
 
     recordAIUsage({
       userId,
@@ -273,21 +213,17 @@ async function getChatReply(
       latencyMs: Date.now() - startedAt,
     });
 
-    const reply = extractDeepSeekText(response.data);
+    if (!reply) return '我剛剛那句沒整理好。你再說一次，我這次好好接。';
 
-    if (!reply) {
-      console.error('❌ DeepSeek empty reply:', JSON.stringify(response.data).slice(0, 1200));
-      return 'Momo 收到空白回應了，我們先保留這句，等等再試。';
-    }
-
-    if (userId) {
-      try {
-        const extracted = extractMemoryFromMessage(text);
-        await mergeMemoryProfileToFirestore(userId, extracted);
-      } catch (memoryError) {
-        console.error('⚠️ 記憶抽取失敗:', memoryError.message);
-      }
-    }
+    await Promise.allSettled([
+      userId ? saveSituation(userId, brain.situation) : Promise.resolve(),
+      userId
+        ? (async () => {
+            const extracted = extractMemoryFromMessage(text);
+            await mergeMemoryProfileToFirestore(userId, extracted);
+          })()
+        : Promise.resolve(),
+    ]);
 
     return reply;
   } catch (error) {
@@ -313,11 +249,10 @@ async function getChatReply(
       latencyMs: Date.now() - startedAt,
     });
 
-    if (status === 402) return 'AI 餘額暫時不足，膠囊內容已先保留。';
-    if (status === 429) return 'Momo 被呼叫太快了，等一下再試。';
-    if (status === 400) return 'AI 模型設定可能有誤，膠囊內容已先保留。';
-
-    return 'Momo 剛剛真的斷線了，這句我先幫你保留。';
+    if (status === 402) return 'Momo 的聊天額度暫時不足，這句我先幫你留著。';
+    if (status === 429) return '你講太快啦🤣 等我一下，再丟一次。';
+    if (status === 400) return 'Momo 的模型設定剛剛卡住了，這句我沒有忘。';
+    return 'Momo 剛剛斷線了。你先別跑，我再接一次。';
   }
 }
 
@@ -433,6 +368,7 @@ async function transcribeAudioFromUrl(audioUrl) {
 
   return response?.data?.text?.trim() || '';
 }
+
 
 module.exports = {
   getChatReply,
