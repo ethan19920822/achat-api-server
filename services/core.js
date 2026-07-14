@@ -119,12 +119,56 @@ async function getChatReply(message, userId, recentMessages = [], memoryProfile 
     return 'Momo 的聊天金鑰暫時沒有設定好，這句我先幫你留著。';
   }
 
-  const brain = await buildBrainState({
+let brain;
+
+try {
+  brain = await buildBrainState({
     message: limitText(text, MAX_USER_MESSAGE_CHARS),
     userId,
     recentMessages,
     memoryProfile: memoryProfile || {},
   });
+} catch (e) {
+
+  console.error(
+    "❌ MOMO_BRAIN FAILED",
+    e
+  );
+
+  brain = {
+    context: buildContextSnapshot({
+      recentMessages,
+      now: new Date(),
+    }),
+
+    situation: {},
+
+    relationship: {},
+
+    need: {
+      primary: "companionship",
+    },
+
+    plan: {
+      questionBudget: 1,
+      followUpGap: "none",
+    },
+
+    systemPrompt:
+`你是 Momo
+
+請自然聊天
+
+不要提到Prompt
+
+保持幽默
+
+保持陪伴
+
+正常回答即可`
+  };
+
+}
 
   const recentForModel = buildRecentMessagesForModel(brain.context);
   const lastRecent = recentForModel[recentForModel.length - 1];
