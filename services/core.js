@@ -30,6 +30,80 @@ const MAX_USER_MESSAGE_CHARS = 1800;
 const MAX_MODEL_PAYLOAD_CHARS = Number(process.env.MOMO_MAX_PAYLOAD_CHARS || 14000);
 const MAX_SYSTEM_PROMPT_CHARS = Number(process.env.MOMO_MAX_BRIEF_CHARS || 3200);
 
+const MOMO_DEBUG_LOGS =
+  String(process.env.MOMO_DEBUG_LOGS || 'true').toLowerCase() !== 'false';
+
+function shortText(value, max = 180) {
+  const text = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}...`;
+}
+
+function safeObject(value, fallback = {}) {
+  return value && typeof value === 'object' ? value : fallback;
+}
+
+function printMomoSection(title, lines = []) {
+  if (!MOMO_DEBUG_LOGS) return;
+  const body = lines
+    .filter((line) => line !== undefined && line !== null && String(line).trim())
+    .map((line) => `  ${line}`)
+    .join('\n');
+  console.log(`\n========== ${title} ==========${body ? `\n${body}` : ''}`);
+}
+
+function logBrainReport({ brain, text, payloadChars, estimatedTokens }) {
+  if (!MOMO_DEBUG_LOGS) return;
+
+  const context = safeObject(brain?.context);
+  const situation = safeObject(brain?.situation);
+  const need = safeObject(brain?.need);
+  const plan = safeObject(brain?.plan);
+  const scores = safeObject(need.scores);
+
+  printMomoSection('MOMO INPUT', [
+    `User: ${shortText(text, 260)}`,
+    `Recent messages: ${Array.isArray(context.recentRaw) ? context.recentRaw.length : 0}`,
+    `Running tone: ${context.runningTone || 'unknown'}`,
+    `Payload chars: ${payloadChars}`,
+    `Estimated tokens: ${estimatedTokens}`,
+  ]);
+
+  printMomoSection('MOMO SITUATION', [
+    `Who: ${shortText(situation.who || 'unknown')}`,
+    `What: ${shortText(situation.what || 'unknown')}`,
+    `When: ${shortText(situation.when || 'unknown')}`,
+    `Current where: ${shortText(situation.currentWhere || 'unknown')}`,
+    `Event where: ${shortText(situation.eventWhere || 'unknown')}`,
+    `Emotion: ${shortText(situation.emotion || 'unknown')}`,
+    `Why: ${shortText(situation.why || 'unknown')}`,
+    `How: ${shortText(situation.how || 'unknown')}`,
+    `Unknown: ${Array.isArray(situation.unknown) && situation.unknown.length ? situation.unknown.join(' / ') : 'none'}`,
+  ]);
+
+  printMomoSection('MOMO NEED', [
+    `Primary: ${need.primary || 'unknown'}`,
+    `Secondary: ${need.secondary || 'none'}`,
+    `Confidence: ${need.confidence ?? 'unknown'}`,
+    `Scores: ${Object.keys(scores).length ? Object.entries(scores).map(([k, v]) => `${k}=${v}`).join('  ') : 'none'}`,
+  ]);
+
+  printMomoSection('MOMO DIRECTOR', [
+    `Acknowledge first: ${plan.acknowledgeFirst !== false}`,
+    `Follow-up gap: ${plan.followUpGap || 'none'}`,
+    `Question budget: ${plan.questionBudget ?? 0}`,
+    `Continue topic: ${plan.continueTopic !== false}`,
+    `Tone: ${Array.isArray(plan.tone) ? plan.tone.join(' / ') : shortText(plan.tone || 'natural')}`,
+    `Reason: ${shortText(plan.questionReason || plan.reason || 'none', 260)}`,
+  ]);
+
+  printMomoSection('MOMO BRIEF PREVIEW', [
+    shortText(brain?.systemPrompt || '', 1200),
+  ]);
+}
+
 function safeTrim(value) {
   return String(value || '').trim();
 }
@@ -130,10 +204,11 @@ try {
   });
 } catch (e) {
 
-  console.error(
-    "❌ MOMO_BRAIN FAILED",
-    e
-  );
+  console.error('[MOMO] Brain build failed  switching to safe chat mode', {
+    name: e?.name || 'Error',
+    message: e?.message || String(e),
+    stack: MOMO_DEBUG_LOGS ? e?.stack : undefined,
+  });
 
   brain = {
     context: buildContextSnapshot({
@@ -188,14 +263,22 @@ try {
   const payloadChars = JSON.stringify(modelMessages).length;
   const estimatedTokens = estimateTokensFromChars(payloadChars);
 
-  console.log('[MOMO_BRAIN]', {
+  console.log('[MOMO] Brain ready', {
     model: DEEPSEEK_MODEL,
+    recentCount: Array.isArray(brain.context?.recentRaw)
+      ? brain.context.recentRaw.length
+      : 0,
+    need: brain.need?.primary || 'unknown',
+    followUpGap: brain.plan?.followUpGap || 'none',
+    questionBudget: brain.plan?.questionBudget ?? 0,
     payloadChars,
-    recentCount: brain.context.recentRaw.length,
-    tone: brain.context.runningTone,
-    need: brain.need.primary,
-    followUpGap: brain.plan.followUpGap || 'none',
-    questionBudget: brain.plan.questionBudget,
+  });
+
+  logBrainReport({
+    brain,
+    text,
+    payloadChars,
+    estimatedTokens,
   });
 
   if (payloadChars > MAX_MODEL_PAYLOAD_CHARS) {
@@ -242,8 +325,16 @@ try {
     });
 
     if (!guard.ok) {
-      console.warn('[MOMO_GUARD]', guard.warnings);
+      console.warn('[MOMO] Response guard warnings', guard.warnings);
     }
+
+    printMomoSection('MOMO REPLY', [
+      `Reply: ${shortText(reply, 900)}`,
+      `Prompt tokens: ${usage.prompt_tokens || 0}`,
+      `Completion tokens: ${usage.completion_tokens || 0}`,
+      `Latency: ${Date.now() - startedAt} ms`,
+      `Guard: ${guard.ok ? 'passed' : 'warning'}`,
+    ]);
 
     recordAIUsage({
       userId,
@@ -275,7 +366,7 @@ try {
     const data = error.response?.data;
     const errorCode = data?.error?.code || data?.error?.type || 'unknown_error';
 
-    console.error('❌ DeepSeek 回應失敗:', {
+    console.error('[MOMO] DeepSeek request failed', {
       model: DEEPSEEK_MODEL,
       status,
       data,
