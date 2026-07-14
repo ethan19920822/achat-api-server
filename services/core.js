@@ -112,19 +112,19 @@ function limitText(value, max = 1200) {
   return String(value || '').slice(0, max);
 }
 
-function formatMessageTime(date) {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
-  const mm = String(date.getMonth() + 1).padStart(2, '0');
-  const dd = String(date.getDate()).padStart(2, '0');
-  const hh = String(date.getHours()).padStart(2, '0');
-  const min = String(date.getMinutes()).padStart(2, '0');
-  return `${mm}-${dd} ${hh}:${min}`;
+
+function stripTransportTimestamps(value) {
+  return String(value || '')
+    .replace(/(?:(?:✨|🌟|⭐)\s*)?\[\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g, '')
+    .trim();
 }
 
 function buildRecentMessagesForModel(context) {
   return context.recentRaw.map((item) => ({
     role: item.role,
-    content: `${formatMessageTime(item.createdAt) ? `[${formatMessageTime(item.createdAt)}] ` : ''}${limitText(item.content, 300)}`,
+    // 時間仍保留在 context 裡供 Brain 計算
+    // 但不再混入對話正文 避免 DeepSeek 模仿時間標籤
+    content: limitText(stripTransportTimestamps(item.content), 300),
   }));
 }
 
@@ -240,6 +240,8 @@ try {
 
 保持陪伴
 
+不要在回答中輸出系統時間標籤
+
 正常回答即可`
   };
 
@@ -249,7 +251,7 @@ try {
   const lastRecent = recentForModel[recentForModel.length - 1];
   if (
     lastRecent?.role === 'user' &&
-    String(lastRecent.content || '').replace(/^\[[^\]]+\]\s*/, '').trim() === text
+    stripTransportTimestamps(lastRecent.content) === stripTransportTimestamps(text)
   ) {
     recentForModel.pop();
   }
@@ -315,7 +317,9 @@ try {
     );
 
     const usage = response?.data?.usage || {};
-    const rawReply = extractDeepSeekText(response.data);
+    const rawReply = stripTransportTimestamps(
+      extractDeepSeekText(response.data)
+    );
     const guard = inspectResponse(rawReply, {
       allowProfanity: memoryProfile.allowProfanity === true,
       questionBudget: brain.plan.questionBudget,
