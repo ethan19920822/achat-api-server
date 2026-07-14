@@ -1,5 +1,9 @@
 const axios = require('axios');
 const admin = require('firebase-admin');
+const {
+  enrichQueueItem,
+  logQueueReport,
+} = require('./emailQueueReadableLog');
 
 function getServiceAccountFromEnv() {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -636,13 +640,15 @@ async function processDueCapsules(options = {}) {
   for (const doc of docs) {
     try {
       const result = await sendCapsuleNow(doc);
-      results.push(result);
+      results.push(enrichQueueItem(doc, result));
     } catch (error) {
-      results.push({
-        capsuleId: doc.id,
-        status: 'failed',
-        error: error?.response?.data || error?.message || String(error),
-      });
+      results.push(
+        enrichQueueItem(doc, {
+          capsuleId: doc.id,
+          status: 'failed',
+          error: error?.response?.data || error?.message || String(error),
+        })
+      );
     }
   }
 
@@ -660,14 +666,9 @@ async function sendOneCapsule(capsuleId) {
 }
 
 function logQueueResult(result) {
-  const counts = result.results.reduce(
-    (summary, item) => {
-      const key = item.status || 'unknown';
-      summary[key] = (summary[key] || 0) + 1;
-      return summary;
-    },
-    {}
-  );
+  logQueueReport(result);
+}
+
 
   console.log(
     '[EmailQueue] processed',
