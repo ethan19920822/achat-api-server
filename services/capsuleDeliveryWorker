@@ -669,18 +669,6 @@ function logQueueResult(result) {
   logQueueReport(result);
 }
 
-
-  console.log(
-    '[EmailQueue] processed',
-    JSON.stringify({
-      checkedAt: result.checkedAt,
-      dueCount: result.dueCount,
-      counts,
-      results: result.results,
-    })
-  );
-}
-
 function startEmailQueueWorker() {
   if (workerStarted) return;
 
