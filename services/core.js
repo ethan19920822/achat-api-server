@@ -24,7 +24,22 @@ const { touchRelationship } = require('./momoBrain/relationshipStore');
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+// Momo v1.0 成本安全鎖：聊天只允許 Flash。
+// 故意不再讀取 DEEPSEEK_MODEL，避免 Render 環境變數、舊設定或其他程式
+// 把一般聊天切回昂貴的 Pro。
+const CHAT_FLASH_MODEL = 'deepseek-v4-flash';
+const DEEPSEEK_MODEL = CHAT_FLASH_MODEL;
+
+const requestedModelFromEnv = String(process.env.DEEPSEEK_MODEL || '').trim();
+if (
+  requestedModelFromEnv &&
+  requestedModelFromEnv !== CHAT_FLASH_MODEL
+) {
+  console.warn('[MOMO_MODEL_LOCK] Ignoring forbidden DEEPSEEK_MODEL env value', {
+    requestedModelFromEnv,
+    forcedModel: CHAT_FLASH_MODEL,
+  });
+}
 
 const MAX_USER_MESSAGE_CHARS = 1800;
 const MAX_MODEL_PAYLOAD_CHARS = Number(process.env.MOMO_MAX_PAYLOAD_CHARS || 14000);
@@ -297,6 +312,15 @@ try {
   if (!gate.allowed) return gate.message;
 
   try {
+    // 最後一道保護：即使未來有人改到上方設定，也不允許 /chat 呼叫 Pro。
+    if (DEEPSEEK_MODEL !== CHAT_FLASH_MODEL) {
+      console.error('[MOMO_MODEL_LOCK] Chat request blocked before provider call', {
+        attemptedModel: DEEPSEEK_MODEL,
+        allowedModel: CHAT_FLASH_MODEL,
+      });
+      return 'Momo 的模型安全鎖剛剛攔住了異常設定，這句我先幫你留著。';
+    }
+
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
       {
@@ -317,6 +341,21 @@ try {
     );
 
     const usage = response?.data?.usage || {};
+    const actualModel = safeTrim(response?.data?.model) || DEEPSEEK_MODEL;
+
+    console.log('[MOMO_MODEL_AUDIT]', {
+      requestedModel: DEEPSEEK_MODEL,
+      actualModel,
+      flashOnly: actualModel === CHAT_FLASH_MODEL,
+    });
+
+    if (actualModel !== CHAT_FLASH_MODEL) {
+      console.error('[MOMO_MODEL_LOCK] Provider returned an unexpected model', {
+        requestedModel: DEEPSEEK_MODEL,
+        actualModel,
+      });
+    }
+
     const rawReply = stripTransportTimestamps(
       extractDeepSeekText(response.data)
     );
@@ -343,7 +382,7 @@ try {
     recordAIUsage({
       userId,
       route,
-      model: DEEPSEEK_MODEL,
+      model: actualModel,
       payloadChars,
       promptTokens: usage.prompt_tokens || 0,
       completionTokens: usage.completion_tokens || 0,
