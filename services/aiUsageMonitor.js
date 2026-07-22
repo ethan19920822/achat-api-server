@@ -5,6 +5,8 @@ const DAILY_REQUEST_LIMIT = Number(process.env.AI_DAILY_REQUEST_LIMIT || 300);
 const DAILY_EST_TOKEN_LIMIT = Number(process.env.AI_DAILY_EST_TOKEN_LIMIT || 1500000);
 const USER_HOURLY_REQUEST_LIMIT = Number(process.env.AI_USER_HOURLY_REQUEST_LIMIT || 60);
 
+const CHAT_FLASH_MODEL = 'deepseek-v4-flash';
+
 const usageDir = path.join('/tmp', 'akasha-ai-usage');
 
 function ensureDir() {
@@ -80,12 +82,31 @@ function getUserHourKey(userId) {
   return `${userId || 'anonymous'}::${nowHourKey()}`;
 }
 
+function isForbiddenChatModel(route, model) {
+  return route === '/chat' && String(model || '').trim() !== CHAT_FLASH_MODEL;
+}
+
 function canCallAI({
   userId = 'anonymous',
   route = 'unknown',
   model = 'unknown',
   estimatedTokens = 0,
 } = {}) {
+  if (isForbiddenChatModel(route, model)) {
+    console.error('[AI_BLOCKED]', {
+      reason: 'FORBIDDEN_CHAT_MODEL',
+      route,
+      attemptedModel: model,
+      allowedModel: CHAT_FLASH_MODEL,
+    });
+
+    return {
+      allowed: false,
+      reason: 'FORBIDDEN_CHAT_MODEL',
+      message: 'Momo 的模型安全鎖攔住了異常設定，這句我先幫你留著。',
+    };
+  }
+
   const usage = readUsage();
   const userHourKey = getUserHourKey(userId);
   const userHourCount = usage.byUserHour[userHourKey] || 0;
