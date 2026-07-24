@@ -628,14 +628,47 @@ async function deleteCommentTree(commentRef) {
 
 async function deletePostCascade(firestore, postId) {
   const postRef = firestore.collection('drift_posts').doc(postId);
+
   const comments = await postRef.collection('comments').get();
-  for (const comment of comments.docs) await deleteCommentTree(comment.ref);
+  for (const comment of comments.docs) {
+    await deleteCommentTree(comment.ref);
+  }
+
   await deleteCollectionInBatches(postRef.collection('likes'));
-  const savedRefs = await firestore.collectionGroup('drift_saved').where('postId', '==', postId).get();
-  for (const saved of savedRefs.docs) await saved.ref.delete();
-  await firestore.collection('drift_meta').doc(postId).delete().catch(() => {});
+
+  let deletedSavedRefs = 0;
+
+  try {
+    const savedRefs = await firestore
+      .collectionGroup('drift_saved')
+      .where('postId', '==', postId)
+      .get();
+
+    for (const saved of savedRefs.docs) {
+      await saved.ref.delete();
+    }
+
+    deletedSavedRefs = savedRefs.size;
+  } catch (error) {
+    console.warn(
+      '[DRIFT_DELETE] drift_saved cleanup skipped:',
+      error.message,
+    );
+  }
+
+  await firestore
+    .collection('drift_meta')
+    .doc(postId)
+    .delete()
+    .catch(() => {});
+
   await postRef.delete();
-  return { postId, deletedComments: comments.size, deletedSavedRefs: savedRefs.size };
+
+  return {
+    postId,
+    deletedComments: comments.size,
+    deletedSavedRefs,
+  };
 }
 
 router.get('/admin/stats', async (req, res) => {
