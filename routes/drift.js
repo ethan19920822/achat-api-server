@@ -181,19 +181,21 @@ router.post('/publish', async (req, res) => {
     const firestore = requireDb(res);
     if (!firestore) return;
 
-    const {
-      userId,
-      title,
-      content,
-      sourceType,
-      allowComments,
-      imageUrls,
-      coverImageUrl,
-      audioUrl,
-      audioDurationSec,
-      capsuleDraftId,
-      capsuleSource,
-    } = req.body || {};
+const {
+  userId,
+  title,
+  content,
+  sourceType,
+  allowComments,
+  imageUrls,
+  coverImageUrl,
+  audioUrl,
+  audioDurationSec,
+  capsuleDraftId,
+  capsuleSource,
+  isAnonymous,
+  authorName,
+} = req.body || {};
 
     const cleanUserId = safeText(userId);
     const cleanTitle = safeText(title);
@@ -217,14 +219,18 @@ router.post('/publish', async (req, res) => {
     const urls = safeArray(imageUrls).slice(0, 3);
     const cover = safeText(coverImageUrl) || (urls.length ? urls[0] : '');
     const source = safeText(sourceType) || 'user';
+    const anonymous = safeBool(isAnonymous, true);
+    const cleanAuthorName = anonymous
+  ? '未知旅人'
+  : (safeText(authorName) || '旅人');
 
     await postRef.set({
       title: result.title,
       content: result.content,
       authorUid: cleanUserId,
-      authorName: '未知旅人',
-      anonymousName: '未知旅人',
-      isAnonymous: true,
+authorName: cleanAuthorName,
+anonymousName: anonymous ? '未知旅人' : cleanAuthorName,
+isAnonymous: anonymous,
       type: source === 'capsule' ? 'capsule' : 'user',
       sourceType: source,
       capsuleSource: safeText(capsuleSource) || source,
