@@ -83,6 +83,52 @@ function requireAdminKey(req, res) {
   return true;
 }
 
+
+async function resolveActorName(firestore, uid) {
+  if (!uid) return '未知旅人';
+
+  try {
+    const snap = await firestore.collection('users').doc(uid).get();
+    const data = snap.data() || {};
+    return safeText(
+      data.nickname ||
+      data.displayName ||
+      data.name
+    ) || '未知旅人';
+  } catch (_) {
+    return '未知旅人';
+  }
+}
+
+async function createDriftNotification(firestore, {
+  recipientUid,
+  actorUid,
+  postId,
+  commentId = '',
+  type,
+  title,
+  body,
+}) {
+  if (!recipientUid || recipientUid === actorUid) return;
+
+  const ref = firestore
+    .collection('users')
+    .doc(recipientUid)
+    .collection('drift_notifications')
+    .doc();
+
+  await ref.set({
+    type: safeText(type),
+    postId: safeText(postId),
+    commentId: safeText(commentId),
+    actorUid: safeText(actorUid),
+    title: safeText(title),
+    body: safeText(body),
+    read: false,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
 async function writePrivateMeta({
   postId,
   userId,
@@ -181,21 +227,19 @@ router.post('/publish', async (req, res) => {
     const firestore = requireDb(res);
     if (!firestore) return;
 
-const {
-  userId,
-  title,
-  content,
-  sourceType,
-  allowComments,
-  imageUrls,
-  coverImageUrl,
-  audioUrl,
-  audioDurationSec,
-  capsuleDraftId,
-  capsuleSource,
-  isAnonymous,
-  authorName,
-} = req.body || {};
+    const {
+      userId,
+      title,
+      content,
+      sourceType,
+      allowComments,
+      imageUrls,
+      coverImageUrl,
+      audioUrl,
+      audioDurationSec,
+      capsuleDraftId,
+      capsuleSource,
+    } = req.body || {};
 
     const cleanUserId = safeText(userId);
     const cleanTitle = safeText(title);
@@ -219,18 +263,14 @@ const {
     const urls = safeArray(imageUrls).slice(0, 3);
     const cover = safeText(coverImageUrl) || (urls.length ? urls[0] : '');
     const source = safeText(sourceType) || 'user';
-    const anonymous = safeBool(isAnonymous, true);
-    const cleanAuthorName = anonymous
-  ? '未知旅人'
-  : (safeText(authorName) || '旅人');
 
     await postRef.set({
       title: result.title,
       content: result.content,
       authorUid: cleanUserId,
-authorName: cleanAuthorName,
-anonymousName: anonymous ? '未知旅人' : cleanAuthorName,
-isAnonymous: anonymous,
+      authorName: '未知旅人',
+      anonymousName: '未知旅人',
+      isAnonymous: true,
       type: source === 'capsule' ? 'capsule' : 'user',
       sourceType: source,
       capsuleSource: safeText(capsuleSource) || source,
@@ -367,6 +407,22 @@ router.post('/like', async (req, res) => {
       });
     });
 
+    if (liked) {
+      const postSnap = await postRef.get();
+      const postData = postSnap.data() || {};
+      const authorUid = safeText(postData.authorUid);
+      const actorName = await resolveActorName(firestore, cleanUserId);
+
+      await createDriftNotification(firestore, {
+        recipientUid: authorUid,
+        actorUid: cleanUserId,
+        postId: cleanPostId,
+        type: 'like',
+        title: '有人喜歡了你的漂流瓶',
+        body: `${actorName} 在海面留下了一顆心`,
+      });
+    }
+
     return res.json({ ok: true, liked, likeCount });
   } catch (error) {
     console.error('[DRIFT_LIKE_ROUTE_ERROR]', error.response?.data || error.message);
@@ -421,6 +477,22 @@ router.post('/save', async (req, res) => {
       });
     });
 
+    if (saved) {
+      const postSnap = await postRef.get();
+      const postData = postSnap.data() || {};
+      const authorUid = safeText(postData.authorUid);
+      const actorName = await resolveActorName(firestore, cleanUserId);
+
+      await createDriftNotification(firestore, {
+        recipientUid: authorUid,
+        actorUid: cleanUserId,
+        postId: cleanPostId,
+        type: 'save',
+        title: '有人收藏了你的故事',
+        body: `${actorName} 把這封漂流瓶留在了身邊`,
+      });
+    }
+
     return res.json({ ok: true, saved, saveCount });
   } catch (error) {
     console.error('[DRIFT_SAVE_ROUTE_ERROR]', error.response?.data || error.message);
@@ -445,16 +517,38 @@ router.post('/comment', async (req, res) => {
 
     const postRef = firestore.collection('drift_posts').doc(cleanPostId);
     const commentRef = postRef.collection('comments').doc();
+    const actorName = await resolveActorName(firestore, cleanUserId);
+
+    let parentUid = '';
+    let parentName = '';
+    let depth = 0;
+
+    if (cleanParent) {
+      const parentSnap = await postRef.collection('comments').doc(cleanParent).get();
+      if (parentSnap.exists) {
+        const parentData = parentSnap.data() || {};
+        parentUid = safeText(parentData.uid);
+        parentName = safeText(parentData.authorName || parentData.anonymousName);
+        depth = Math.min(1, Number(parentData.depth || 0) + 1);
+      }
+    }
+
+    let postAuthorUid = '';
 
     await firestore.runTransaction(async (tx) => {
       const postSnap = await tx.get(postRef);
-      const current = Number(postSnap.data()?.commentCount || 0);
+      const postData = postSnap.data() || {};
+      const current = Number(postData.commentCount || 0);
+      postAuthorUid = safeText(postData.authorUid);
 
       tx.set(commentRef, {
         uid: cleanUserId,
         content: cleanContent,
-        anonymousName: '未知旅人',
+        authorName: actorName,
+        anonymousName: actorName,
         parentCommentId: cleanParent,
+        parentAuthorName: parentName,
+        depth,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         likeCount: 0,
       });
@@ -464,6 +558,32 @@ router.post('/comment', async (req, res) => {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     });
+
+    if (cleanParent && parentUid) {
+      await createDriftNotification(firestore, {
+        recipientUid: parentUid,
+        actorUid: cleanUserId,
+        postId: cleanPostId,
+        commentId: commentRef.id,
+        type: 'reply',
+        title: '有人回覆了你的留言',
+        body: `${actorName}：${cleanContent.slice(0, 80)}`,
+      });
+    }
+
+    if (!cleanParent || postAuthorUid !== parentUid) {
+      await createDriftNotification(firestore, {
+        recipientUid: postAuthorUid,
+        actorUid: cleanUserId,
+        postId: cleanPostId,
+        commentId: commentRef.id,
+        type: cleanParent ? 'reply' : 'comment',
+        title: cleanParent
+          ? '你的漂流瓶有了新的對話'
+          : '有人回應了你的漂流瓶',
+        body: `${actorName}：${cleanContent.slice(0, 80)}`,
+      });
+    }
 
     return res.json({ ok: true, commentId: commentRef.id });
   } catch (error) {
@@ -516,6 +636,23 @@ router.post('/comment-like', async (req, res) => {
 
       tx.update(commentRef, { likeCount });
     });
+
+    if (liked) {
+      const commentSnap = await commentRef.get();
+      const commentData = commentSnap.data() || {};
+      const commentOwnerUid = safeText(commentData.uid);
+      const actorName = await resolveActorName(firestore, cleanUserId);
+
+      await createDriftNotification(firestore, {
+        recipientUid: commentOwnerUid,
+        actorUid: cleanUserId,
+        postId: cleanPostId,
+        commentId: cleanCommentId,
+        type: 'like',
+        title: '有人喜歡了你的留言',
+        body: `${actorName} 對你的回應留下了一顆心`,
+      });
+    }
 
     return res.json({ ok: true, liked, likeCount });
   } catch (error) {
