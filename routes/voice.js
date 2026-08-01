@@ -1,3 +1,4 @@
+console.log("✅ voice.js imported");
 const express = require('express');
 
 const {
@@ -34,6 +35,7 @@ function isAuthorizedTestRequest(req) {
 }
 
 router.post('/test', async (req, res) => {
+  console.log("🔥 /voice/test hit");
   if (!isAuthorizedTestRequest(req)) {
     return res.status(401).json({
       error: 'unauthorized',
