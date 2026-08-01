@@ -177,6 +177,7 @@ const capsuleRoutes = require('./routes/capsule');
 const driftRoutes = require('./routes/drift');
 const { startEmailQueueWorker } = require('./services/capsuleDeliveryWorker');
 const voiceRoutes = require('./routes/voice');
+console.log("✅ Voice route loaded");
 
 const {
   analyzeImageFromUrl,
@@ -187,6 +188,7 @@ app.use('/chat', chatLimiter, chatRoutes);
 app.use('/capsule', capsuleLimiter, capsuleRoutes);
 app.use('/drift', driftLimiter, driftRoutes);
 app.use('/voice', chatLimiter, voiceRoutes);
+console.log("✅ Voice route mounted");
 
 app.post('/vision', visionLimiter, async (req, res) => {
   try {
