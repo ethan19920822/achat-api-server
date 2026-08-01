@@ -99,4 +99,36 @@ router.post('/test', async (req, res) => {
   }
 });
 
+// ===== TEMP DEMO ONLY =====
+// 測試完成請直接刪掉
+
+router.get('/demo', async (req, res) => {
+  console.log("🎤 /voice/demo");
+
+  try {
+
+    const audio = await generateAkashaVoice(
+      "晚安主人 今天真的辛苦了 我一直都在 好好休息吧"
+    );
+
+    res.set({
+      "Content-Type": "audio/mpeg",
+      "Cache-Control": "no-store"
+    });
+
+    return res.send(audio.buffer);
+
+  } catch (e) {
+
+    console.error(e);
+
+    return res.status(500).json({
+      error: e.code,
+      message: e.message,
+      provider: e.providerData
+    });
+
+  }
+
+});
 module.exports = router;
