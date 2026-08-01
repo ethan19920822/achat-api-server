@@ -176,6 +176,7 @@ const chatRoutes = require('./routes/chat');
 const capsuleRoutes = require('./routes/capsule');
 const driftRoutes = require('./routes/drift');
 const { startEmailQueueWorker } = require('./services/capsuleDeliveryWorker');
+const voiceRoutes = require('./routes/voice');
 
 const {
   analyzeImageFromUrl,
@@ -185,6 +186,7 @@ const {
 app.use('/chat', chatLimiter, chatRoutes);
 app.use('/capsule', capsuleLimiter, capsuleRoutes);
 app.use('/drift', driftLimiter, driftRoutes);
+app.use('/voice', chatLimiter, voiceRoutes);
 
 app.post('/vision', visionLimiter, async (req, res) => {
   try {
