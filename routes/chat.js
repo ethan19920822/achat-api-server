@@ -1,9 +1,11 @@
 const express = require('express');
 const crypto = require('crypto');
+
 const router = express.Router();
 
 const { getChatReply } = require('../services/core');
 const { getUsageSummary } = require('../services/aiUsageMonitor');
+const { directVoiceEvent } = require('../services/voiceDirector');
 
 const recentRequests = new Map();
 
@@ -53,7 +55,9 @@ router.post('/', async (req, res) => {
   const cleanMessage = safeText(message);
 
   if (!cleanMessage) {
-    return res.status(400).json({ error: 'Message is required' });
+    return res.status(400).json({
+      error: 'Message is required',
+    });
   }
 
   cleanupRecentRequests();
@@ -61,14 +65,23 @@ router.post('/', async (req, res) => {
   const requestKey = makeRequestKey(userId, cleanMessage);
   const existing = recentRequests.get(requestKey);
 
-  if (existing && Date.now() - existing.createdAt < SAME_REQUEST_TTL_MS) {
+  if (
+    existing &&
+    Date.now() - existing.createdAt < SAME_REQUEST_TTL_MS
+  ) {
     console.log('⚠️ Duplicate chat request blocked:', {
       userId: userId || 'anonymous',
       ageMs: Date.now() - existing.createdAt,
     });
 
     return res.json({
-      reply: existing.reply || 'Momo 正在整理這句話，先等我一下😆',
+      reply:
+        existing.reply ||
+        'Momo 正在整理這句話，先等我一下😆',
+      voiceEvent: existing.voiceEvent || {
+        show: false,
+        reason: 'duplicate_request',
+      },
       duplicate: true,
     });
   }
@@ -76,30 +89,71 @@ router.post('/', async (req, res) => {
   recentRequests.set(requestKey, {
     createdAt: Date.now(),
     reply: '',
+    voiceEvent: {
+      show: false,
+      reason: 'pending',
+    },
   });
 
   try {
+    // Existing DeepSeek / memory / Momo Brain flow remains unchanged.
     const reply = await getChatReply(
       cleanMessage,
       userId,
       recentMessages,
-      memoryProfile
+      memoryProfile,
     );
+
+    // Voice failure must never break normal chat.
+    let voiceEvent = {
+      show: false,
+      reason: 'voice_not_evaluated',
+    };
+
+    try {
+      voiceEvent = await directVoiceEvent({
+        userId,
+        message: cleanMessage,
+        reply,
+        recentMessages: Array.isArray(recentMessages)
+          ? recentMessages
+          : [],
+      });
+    } catch (voiceError) {
+      console.error('[AKASHA_VOICE] Director failed safely', {
+        code: voiceError.code,
+        status: voiceError.status,
+        message: voiceError.message,
+      });
+
+      voiceEvent = {
+        show: false,
+        reason: 'voice_director_failed',
+      };
+    }
 
     recentRequests.set(requestKey, {
       createdAt: Date.now(),
       reply,
+      voiceEvent,
     });
 
-    res.json({ reply });
+    return res.json({
+      reply,
+      voiceEvent,
+    });
   } catch (error) {
     console.error('Error generating reply:', error);
 
     recentRequests.delete(requestKey);
 
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Failed to get reply',
       reply: 'Momo 剛剛斷線了，膠囊內容已先保留。',
+      voiceEvent: {
+        show: false,
+        reason: 'chat_failed',
+      },
     });
   }
 });
