@@ -167,6 +167,13 @@ const driftLimiter = createLimiter({
   message: '漂流瓶操作過於頻繁，請稍後再試。',
 });
 
+const emailCodeLimiter = createLimiter({
+  windowMs: 60 * 1000,
+  limit: 12,
+  name: 'email-code',
+  message: '驗證操作過於頻繁，請稍後再試。',
+});
+
 app.use(globalLimiter);
 
 // =========================================================
@@ -177,7 +184,9 @@ const capsuleRoutes = require('./routes/capsule');
 const driftRoutes = require('./routes/drift');
 const { startEmailQueueWorker } = require('./services/capsuleDeliveryWorker');
 const voiceRoutes = require('./routes/voice');
+const emailVerificationCodeRoutes = require('./routes/emailVerificationCode');
 console.log("✅ Voice route loaded");
+console.log("✅ Email verification code route loaded");
 
 const {
   analyzeImageFromUrl,
@@ -188,7 +197,9 @@ app.use('/chat', chatLimiter, chatRoutes);
 app.use('/capsule', capsuleLimiter, capsuleRoutes);
 app.use('/drift', driftLimiter, driftRoutes);
 app.use('/voice', chatLimiter, voiceRoutes);
+app.use('/auth/email-code', emailCodeLimiter, emailVerificationCodeRoutes);
 console.log("✅ Voice route mounted");
+console.log("✅ Email verification code route mounted");
 
 app.post('/vision', visionLimiter, async (req, res) => {
   try {
