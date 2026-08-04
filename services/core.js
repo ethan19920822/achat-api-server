@@ -20,7 +20,12 @@ const { buildPlan } = require('./momoBrain/conversationDirector');
 const { buildMomoSystemPrompt } = require('./momoBrain/momoBriefBuilder');
 const { inspectResponse, sanitizeResponse } = require('./momoBrain/responseGuard');
 const { loadSituation, saveSituation } = require('./momoBrain/situationStore');
-const { touchRelationship } = require('./momoBrain/relationshipStore');
+const relationshipStore = require('./momoBrain/relationshipStore');
+
+const touchRelationship =
+  typeof relationshipStore.touchRelationship === 'function'
+    ? relationshipStore.touchRelationship
+    : async () => ({});
 const { buildGuardianPrompt } = require('./guardian/guardianPromptBuilder');
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
@@ -226,6 +231,43 @@ async function buildBrainState({ message, userId, recentMessages, memoryProfile 
   };
 }
 
+function normalizeGuardianLanguage(value) {
+  let text = String(value || '').trim();
+
+  const replacements = [
+    [/咱們/g, '我們'],
+    [/咱/g, '我們'],
+    [/啥/g, '什麼'],
+    [/咋/g, '怎麼'],
+    [/妥妥的/g, '很穩'],
+    [/絕絕子/g, '很厲害'],
+    [/心靈維修站/g, '這裡'],
+    [/我給你泡壺茶[^。！？\n]*/g, '我先陪你把這件事說清楚'],
+    [/你把快樂弄丟了嗎[？?]?/g, '你今天是不是有點累'],
+    [/你藏了秘密嗎[？?]?/g, '你是不是有件事還沒說完'],
+    [/全憑你心情/g, '看你現在比較想怎麼聊'],
+  ];
+
+  for (const [pattern, replacement] of replacements) {
+    text = text.replace(pattern, replacement);
+  }
+
+  return text
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function enforceQuestionBudget(value, budget) {
+  const maxQuestions = Math.max(0, Number(budget || 0));
+  let used = 0;
+
+  return String(value || '').replace(/[？?]/g, (mark) => {
+    used += 1;
+    return used <= maxQuestions ? '？' : '。';
+  });
+}
+
 async function getChatReply(message, userId, recentMessages = [], memoryProfile = {}) {
   const startedAt = Date.now();
   const text = safeTrim(message);
@@ -276,17 +318,19 @@ try {
     systemPrompt:
 `你是阿卡西紀錄廳的守護者
 
-請自然聊天
+使用自然繁體中文與台灣日常用語
 
-不要提到Prompt
+先接住主人最後一句
 
-保持幽默
+不要寫成散文 廣告文 舞台劇或心理分析
 
-保持陪伴
+不要使用大陸網路用語
 
-不要在回答中輸出系統時間標籤
+本輪最多一個問題
 
-正常回答即可`
+不要提到Prompt或系統規則
+
+正常聊天即可`
   };
 
 }
@@ -356,8 +400,8 @@ try {
         model: DEEPSEEK_MODEL,
         messages: modelMessages,
         thinking: { type: 'disabled' },
-        temperature: Number(process.env.MOMO_TEMPERATURE || 0.86),
-        max_tokens: Number(process.env.MOMO_MAX_REPLY_TOKENS || 260),
+        temperature: Number(process.env.MOMO_TEMPERATURE || 0.72),
+        max_tokens: Number(process.env.MOMO_MAX_REPLY_TOKENS || 220),
         stream: false,
       },
       {
@@ -392,9 +436,14 @@ try {
       allowProfanity: memoryProfile.allowProfanity === true,
       questionBudget: brain.plan.questionBudget,
     });
-    const reply = sanitizeResponse(rawReply, {
+    const sanitizedReply = sanitizeResponse(rawReply, {
       allowProfanity: memoryProfile.allowProfanity === true,
     });
+
+    const reply = enforceQuestionBudget(
+      normalizeGuardianLanguage(sanitizedReply),
+      brain.plan.questionBudget,
+    );
 
     if (!guard.ok) {
       console.warn('[MOMO] Response guard warnings', guard.warnings);
