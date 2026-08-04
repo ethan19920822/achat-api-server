@@ -77,7 +77,7 @@ router.post('/', async (req, res) => {
     return res.json({
       reply:
         existing.reply ||
-        'Momo 正在整理這句話，先等我一下😆',
+        '阿卡西正在整理這句話，先等我一下😆',
       voiceEvent: existing.voiceEvent || {
         show: false,
         reason: 'duplicate_request',
@@ -149,7 +149,7 @@ router.post('/', async (req, res) => {
 
     return res.status(500).json({
       error: 'Failed to get reply',
-      reply: 'Momo 剛剛斷線了，膠囊內容已先保留。',
+      reply: '阿卡西剛剛斷線了，膠囊內容已先保留。',
       voiceEvent: {
         show: false,
         reason: 'chat_failed',
