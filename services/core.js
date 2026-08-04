@@ -26,7 +26,7 @@ const touchRelationship =
   typeof relationshipStore.touchRelationship === 'function'
     ? relationshipStore.touchRelationship
     : async () => ({});
-const { buildGuardianPrompt } = require('./guardian/guardianPromptBuilder');
+const { buildGuardianOS } = require('./guardian/guardianOS');
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -50,7 +50,7 @@ if (
 const MAX_USER_MESSAGE_CHARS = 1800;
 const MAX_MODEL_PAYLOAD_CHARS = Number(process.env.MOMO_MAX_PAYLOAD_CHARS || 14000);
 const MAX_SYSTEM_PROMPT_CHARS = Number(
-  process.env.MOMO_MAX_BRIEF_CHARS || 4200
+  process.env.MOMO_MAX_BRIEF_CHARS || 5200
 );
 const MAX_MOMO_BRAIN_BRIEF_CHARS = Number(
   process.env.MOMO_BRAIN_BRIEF_CHARS || 2400
@@ -209,10 +209,9 @@ async function buildBrainState({ message, userId, recentMessages, memoryProfile 
     MAX_MOMO_BRAIN_BRIEF_CHARS,
   );
 
-  const guardianBuild = buildGuardianPrompt({
+  const guardianBuild = buildGuardianOS({
     message,
-    basePrompt: momoBrainBrief,
-    memoryProfile,
+    brainPrompt: momoBrainBrief,
   });
 
   const systemPrompt = limitText(
@@ -232,27 +231,7 @@ async function buildBrainState({ message, userId, recentMessages, memoryProfile 
 }
 
 function normalizeGuardianLanguage(value) {
-  let text = String(value || '').trim();
-
-  const replacements = [
-    [/咱們/g, '我們'],
-    [/咱/g, '我們'],
-    [/啥/g, '什麼'],
-    [/咋/g, '怎麼'],
-    [/妥妥的/g, '很穩'],
-    [/絕絕子/g, '很厲害'],
-    [/心靈維修站/g, '這裡'],
-    [/我給你泡壺茶[^。！？\n]*/g, '我先陪你把這件事說清楚'],
-    [/你把快樂弄丟了嗎[？?]?/g, '你今天是不是有點累'],
-    [/你藏了秘密嗎[？?]?/g, '你是不是有件事還沒說完'],
-    [/全憑你心情/g, '看你現在比較想怎麼聊'],
-  ];
-
-  for (const [pattern, replacement] of replacements) {
-    text = text.replace(pattern, replacement);
-  }
-
-  return text
+  return String(value || '')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
