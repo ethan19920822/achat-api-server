@@ -379,8 +379,8 @@ try {
         model: DEEPSEEK_MODEL,
         messages: modelMessages,
         thinking: { type: 'disabled' },
-        temperature: Number(process.env.MOMO_TEMPERATURE || 0.72),
-        max_tokens: Number(process.env.MOMO_MAX_REPLY_TOKENS || 220),
+        temperature: Number(process.env.MOMO_TEMPERATURE || 0.82),
+        max_tokens: Number(process.env.MOMO_MAX_REPLY_TOKENS || 360),
         stream: false,
       },
       {
