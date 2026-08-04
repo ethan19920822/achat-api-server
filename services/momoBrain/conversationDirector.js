@@ -1,18 +1,5 @@
 'use strict';
 
-const DEFAULT_AVOID = [
-  '我聽起來像是',
-  '哪一段最卡',
-  '你現在安全嗎',
-  '是哪個傢伙',
-  '告訴小精靈',
-  '心靈維修站',
-  '我泡壺茶',
-  '你把快樂弄丟了',
-  '你藏了秘密',
-  '全憑你心情',
-];
-
 function chooseGap({ situation, need }) {
   const unknown = new Set(situation.unknown || []);
   const scores = need.scores || {};
