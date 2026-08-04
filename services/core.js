@@ -21,6 +21,7 @@ const { buildMomoSystemPrompt } = require('./momoBrain/momoBriefBuilder');
 const { inspectResponse, sanitizeResponse } = require('./momoBrain/responseGuard');
 const { loadSituation, saveSituation } = require('./momoBrain/situationStore');
 const { touchRelationship } = require('./momoBrain/relationshipStore');
+const { buildGuardianPrompt } = require('./guardian/guardianPromptBuilder');
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -43,7 +44,12 @@ if (
 
 const MAX_USER_MESSAGE_CHARS = 1800;
 const MAX_MODEL_PAYLOAD_CHARS = Number(process.env.MOMO_MAX_PAYLOAD_CHARS || 14000);
-const MAX_SYSTEM_PROMPT_CHARS = Number(process.env.MOMO_MAX_BRIEF_CHARS || 3200);
+const MAX_SYSTEM_PROMPT_CHARS = Number(
+  process.env.MOMO_MAX_BRIEF_CHARS || 4200
+);
+const MAX_MOMO_BRAIN_BRIEF_CHARS = Number(
+  process.env.MOMO_BRAIN_BRIEF_CHARS || 2400
+);
 
 const MOMO_DEBUG_LOGS =
   String(process.env.MOMO_DEBUG_LOGS || 'true').toLowerCase() !== 'false';
@@ -112,6 +118,7 @@ function logBrainReport({ brain, text, payloadChars, estimatedTokens }) {
     `Continue topic: ${plan.continueTopic !== false}`,
     `Tone: ${Array.isArray(plan.tone) ? plan.tone.join(' / ') : shortText(plan.tone || 'natural')}`,
     `Reason: ${shortText(plan.questionReason || plan.reason || 'none', 260)}`,
+    `Guardian topic: ${brain?.guardianTopic || 'general'}`,
   ]);
 
   printMomoSection('MOMO BRIEF PREVIEW', [
@@ -185,16 +192,38 @@ async function buildBrainState({ message, userId, recentMessages, memoryProfile 
     },
   });
 
-  const systemPrompt = limitText(buildMomoSystemPrompt({
+  const momoBrainBrief = limitText(
+    buildMomoSystemPrompt({
+      context,
+      situation,
+      relationship,
+      need,
+      plan,
+      memoryProfile,
+    }),
+    MAX_MOMO_BRAIN_BRIEF_CHARS,
+  );
+
+  const guardianBuild = buildGuardianPrompt({
+    message,
+    basePrompt: momoBrainBrief,
+    memoryProfile,
+  });
+
+  const systemPrompt = limitText(
+    guardianBuild.prompt,
+    MAX_SYSTEM_PROMPT_CHARS,
+  );
+
+  return {
     context,
     situation,
     relationship,
     need,
     plan,
-    memoryProfile,
-  }), MAX_SYSTEM_PROMPT_CHARS);
-
-  return { context, situation, relationship, need, plan, systemPrompt };
+    guardianTopic: guardianBuild.topic,
+    systemPrompt,
+  };
 }
 
 async function getChatReply(message, userId, recentMessages = [], memoryProfile = {}) {
@@ -205,7 +234,7 @@ async function getChatReply(message, userId, recentMessages = [], memoryProfile 
   if (!text) return '你剛剛好像沒打字😆';
   if (!DEEPSEEK_API_KEY) {
     console.error('❌ DEEPSEEK_API_KEY missing');
-    return 'Momo 的聊天金鑰暫時沒有設定好，這句我先幫你留著。';
+    return '阿卡西的聊天金鑰暫時沒有設定好，這句我先幫你留著。';
   }
 
 let brain;
@@ -245,7 +274,7 @@ try {
     },
 
     systemPrompt:
-`你是 Momo
+`你是阿卡西紀錄廳的守護者
 
 請自然聊天
 
@@ -318,7 +347,7 @@ try {
         attemptedModel: DEEPSEEK_MODEL,
         allowedModel: CHAT_FLASH_MODEL,
       });
-      return 'Momo 的模型安全鎖剛剛攔住了異常設定，這句我先幫你留著。';
+      return '阿卡西的模型安全鎖剛剛攔住了異常設定，這句我先幫你留著。';
     }
 
     const response = await axios.post(
@@ -427,10 +456,10 @@ try {
       latencyMs: Date.now() - startedAt,
     });
 
-    if (status === 402) return 'Momo 的聊天額度暫時不足，這句我先幫你留著。';
+    if (status === 402) return '阿卡西的聊天額度暫時不足，這句我先幫你留著。';
     if (status === 429) return '你講太快啦🤣 等我一下，再丟一次。';
-    if (status === 400) return 'Momo 的模型設定剛剛卡住了，這句我沒有忘。';
-    return 'Momo 剛剛斷線了。你先別跑，我再接一次。';
+    if (status === 400) return '阿卡西的模型設定剛剛卡住了，這句我沒有忘。';
+    return '阿卡西剛剛斷線了。你先別跑，我再接一次。';
   }
 }
 
