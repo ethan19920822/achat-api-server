@@ -2,101 +2,85 @@
 
 const TOPICS = Object.freeze({
   GENERAL: 'general',
-  PRODUCT: 'product',
   WORLD: 'world',
   GUARDIAN: 'guardian',
   CAPSULE: 'capsule',
   PALACE: 'palace',
-  PEOPLE: 'people',
-  IMPORTANT_DATES: 'importantDates',
+  RECIPIENTS: 'recipients',
   DRIFT_BOTTLE: 'driftBottle',
   VOICE: 'voice',
   MEMBERSHIP: 'membership',
   SETTINGS: 'settings',
-  NOTIFICATIONS: 'notifications',
   SUPPORT: 'support',
+  PRODUCT: 'product',
 });
 
-function normalize(value) {
+function text(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function hasAny(text, words) {
-  return words.some((word) => text.includes(normalize(word)));
+function hasAny(source, words) {
+  return words.some((word) => source.includes(text(word)));
 }
 
 function routeGuardianTopic(message) {
-  const text = normalize(message);
-  if (!text) return TOPICS.GENERAL;
+  const source = text(message);
+  if (!source) return TOPICS.GENERAL;
 
-  if (hasAny(text, [
-    '阿卡西是什麼', '阿卡西紀錄廳', '世界觀', '創世', '宇宙',
-    'akasha cube 是什麼', '阿卡西方塊是什麼',
+  if (hasAny(source, [
+    '阿卡西是什麼', '阿卡西紀錄廳', '世界觀', '神話',
+    '光還沒有名字', 'akasha cube 是什麼', '阿卡西方塊是什麼',
   ])) return TOPICS.WORLD;
 
-  if (hasAny(text, [
-    '你是誰', '妳是誰', '守護者是誰', '卡姐', '阿卡西是誰',
-    '你的名字', '妳的名字',
+  if (hasAny(source, [
+    '你是誰', '妳是誰', '守護者是誰', '小精靈', '你的名字',
+    '妳的名字', '你叫什麼', '妳叫什麼',
   ])) return TOPICS.GUARDIAN;
 
-  if (hasAny(text, [
-    '時間膠囊', '膠囊', '寄給未來', '寫給未來', '指定哪一天',
-    '等命運勇氣', '先安靜收藏', '寫給自己', '寄給自己',
-    '收件人', '寄信',
+  if (hasAny(source, [
+    '時間膠囊', '祝福膠囊', '希望膠囊', '收藏膠囊', '自我膠囊',
+    '寫給未來', '寄給未來', '未來的自己', '指定日期',
   ])) return TOPICS.CAPSULE;
 
-  if (hasAny(text, [
-    '回憶宮殿', '宮殿', '膠囊箱', '揭密日', 'life mate',
-    '收藏漂流瓶', 'palace',
+  if (hasAny(source, [
+    '膠囊收發室', '等待寄送', '等待中的膠囊', '回憶區',
+    '膠囊箱', '宮殿', 'palace',
   ])) return TOPICS.PALACE;
 
-  if (hasAny(text, [
-    '重要的人', '重要人物', 'people hall', '聯絡人', '收件人資料',
-    '家人資料', '朋友資料', '伴侶資料',
-  ])) return TOPICS.PEOPLE;
+  if (hasAny(source, [
+    '收件人', '新增收件人', '收件人資料', '寄給誰',
+  ])) return TOPICS.RECIPIENTS;
 
-  if (hasAny(text, [
-    '重要日期', '揭密日', '生日提醒', '紀念日', '日曆', 'calendar',
-  ])) return TOPICS.IMPORTANT_DATES;
-
-  if (hasAny(text, [
-    '漂流瓶', '回憶之海', '匿名故事', '匿名嗎', '看得到我是誰',
-    '留言', '分支回覆', '收藏故事', '按讚',
+  if (hasAny(source, [
+    '漂流瓶', '回憶之海', '匿名故事', '匿名分享',
+    '留言', '收藏故事', '按讚', '回覆',
   ])) return TOPICS.DRIFT_BOTTLE;
 
-  if (hasAny(text, [
-    '語音', '聲音', 'whisper', '光之共鳴', '為什麼不能說話',
-    '為什麼不是每次都有語音', 'elevenlabs',
+  if (hasAny(source, [
+    '語音祝福', '守護者的聲音', '聽到你的聲音', '語音訊息',
+    '聲音', '語音',
   ])) return TOPICS.VOICE;
 
-  if (hasAny(text, [
-    '會員', '免費版', '付費', '月費', '年費', '擴充包',
-    '11.99', '79美元', '89美元', '99美元',
+  if (hasAny(source, [
+    '會員', 'traveler', 'akasha member', '免費方案',
+    '月費', '年費', '加值', '記憶延伸', '膠囊典藏',
   ])) return TOPICS.MEMBERSHIP;
 
-  if (hasAny(text, [
-    'me頁面', '設定', '聖殿身分', '個人資料', 'email',
-    '手機', '座右銘', '語言設定',
+  if (hasAny(source, [
+    'me', '設定', '個人資料', '語言', '通知', '隱私',
+    '服務條款', '帳號',
   ])) return TOPICS.SETTINGS;
 
-  if (hasAny(text, [
-    '通知', '推播', '提醒', 'fcm',
-  ])) return TOPICS.NOTIFICATIONS;
-
-  if (hasAny(text, [
-    '客服', '聯絡我們', '問題回報', '技術支援',
-    '產品建議', '合作洽詢',
+  if (hasAny(source, [
+    '聯絡我們', '客服', '問題回報', '產品建議', '合作洽詢',
   ])) return TOPICS.SUPPORT;
 
-  if (hasAny(text, [
-    '這個app', '這個 app', '可以做什麼', '有哪些功能',
-    '怎麼玩', '玩法', '功能介紹',
+  if (hasAny(source, [
+    '這個 app', '這個app', '可以做什麼', '有哪些功能',
+    '怎麼使用', '功能介紹',
   ])) return TOPICS.PRODUCT;
 
   return TOPICS.GENERAL;
 }
 
-module.exports = {
-  TOPICS,
-  routeGuardianTopic,
-};
+module.exports = { TOPICS, routeGuardianTopic };
