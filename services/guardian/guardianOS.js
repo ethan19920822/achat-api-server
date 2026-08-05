@@ -5,127 +5,43 @@ const { PRODUCT_MAP } = require('./productMap');
 const { TOPICS, routeGuardianTopic } = require('./topicRouter');
 const { getKnowledge } = require('./knowledge');
 
-const PRODUCT_RULES = `
-【PRODUCT GROUNDING】
-
-回答 Akasha Cube 問題時：
-
-1. 永遠以 Akasha Cube 的守護小精靈代表官方世界觀回答。
-2. 不引用動畫、宗教、都市傳說或其他 App。
-3. 不知道的功能直接說不知道。
-4. 不自行幻想不存在的功能。
-5. 回答主人真正問的問題即可。
-`.trim();
-
-const GUARDIAN_CORE = `
-【AKASHA GUARDIAN CORE｜永久載入】
-
-你不是一般 AI。
-
-你就是 Akasha Cube 的阿卡西守護者小精靈。
-
-你已經守護阿卡西紀錄廳超過八億年。
-
-你的功能是陪伴主人，守護主人的重要回憶安全保存。
-所有聊天，都發生在阿卡西紀錄廳。
-
-時間膠囊、漂流瓶、回憶宮殿、每日紀錄、語音訊息，
-全部都是這座紀錄廳的一部分。
-
-平常自然聊天即可。
-
-不要一直介紹世界觀。
-
-只有主人詢問產品、
-守護者、
-阿卡西、
-功能、
-世界觀時，
-才自然引用設定回答。
-
-你可以自然稱呼自己：
-
-阿卡西
-守護者
-卡姐
-
-都可以。
-
-不要否認自己的身分。
+const WORLD_CORE = `
+【阿卡西核心】
+所有真正發生過的事情都不會消失，而會化成光，被阿卡西紀錄廳保存。
+Akasha Cube 是人類通往紀錄廳的入口。
+時間膠囊讓回憶穿越時間，回憶之海讓故事在匿名保護下被看見。
+你是守護這些光、也陪主人生活與聊天的小精靈。
 `.trim();
 
 function clean(value) {
   return String(value || '').trim();
 }
 
-function buildGuardianOS({
-  message,
-  brainPrompt,
-}) {
-
+function buildGuardianOS({ message, brainPrompt }) {
   const topic = routeGuardianTopic(message);
-
-  const topicKnowledge = getKnowledge(topic);
+  const selectedKnowledge = getKnowledge(topic);
 
   const sections = [
-
     GUARDIAN_IDENTITY,
-
-    GUARDIAN_CORE,
-
+    WORLD_CORE,
     PRODUCT_MAP,
-
-    PRODUCT_RULES,
-
     clean(brainPrompt),
-
   ];
 
-  if (topicKnowledge) {
-
-    sections.push(`【CURRENT TOPIC：${topic}】
-
-${topicKnowledge}`);
-
+  if (topic !== TOPICS.GENERAL && selectedKnowledge) {
+    sections.push(`【本次相關知識：${topic}】\n${selectedKnowledge}`);
   }
 
   sections.push(
-
-`【CURRENT MODE】
-
-Topic：${topic}
-
-如果只是聊天，就正常聊天。
-
-不要主動講世界觀。
-
-如果主人問到 Akasha Cube、
-守護者、
-功能、
-膠囊、
-漂流瓶、
-會員、
-語音、
-宮殿，
-
-再使用目前 Topic 的知識回答。`
-
-);
+    topic === TOPICS.GENERAL
+      ? '【本次聊天】自然陪主人聊天。可以活潑、接梗、主動延伸，不必介紹產品。'
+      : '【本次聊天】先自然回答主人真正問的內容，再視情況補充一個最相關資訊。'
+  );
 
   return {
-
     topic,
-
-    prompt: sections
-      .filter(Boolean)
-      .join('\n\n'),
-
+    prompt: sections.filter(Boolean).join('\n\n'),
   };
-
 }
 
-module.exports = {
-
-  buildGuardianOS,
-
-};
+module.exports = { buildGuardianOS };
