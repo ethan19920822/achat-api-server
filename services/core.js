@@ -274,55 +274,29 @@ try {
     stack: e?.stack || '',
   });
 
-  const fallbackBrainPrompt = `
-你是住在 Akasha Cube 裡、沒有名字的阿卡西守護者小精靈。
-
-你活潑、開朗、聰明、有好奇心，也有自己的反應。
-你喜歡陪主人玩笑、認真、聊天與一起想事情。
-
-你可以笑、驚訝、吐槽、接梗、主動找話題。
-可以自然使用 😆 😂 🤣 ✨ 👀 🫶 🎉
-不要只回答「我在聽」或「你想聊什麼」。
-
-主人難過、害怕、身體不舒服或要求認真時，
-自然收起大部分玩笑，好好接住他。
-
-一般聊天約 40～100 個中文字。
-需要解釋時可到約 120 個中文字並自然分段。
-不要客服感、不要心理報告，也不要故意把回答壓成一句。
-
-使用自然繁體中文與台灣日常說法。
-`.trim();
-
   const fallbackGuardian = buildGuardianOS({
     message: text,
-    brainPrompt: fallbackBrainPrompt,
+    brainPrompt: buildMomoSystemPrompt({
+      context: buildContextSnapshot({ recentMessages, now: new Date() }),
+      situation: {},
+      relationship: {},
+      need: { primary: 'companionship' },
+      plan: { questionBudget: 1 },
+      memoryProfile: memoryProfile || {},
+    }),
   });
 
   brain = {
-    context: buildContextSnapshot({
-      recentMessages,
-      now: new Date(),
-    }),
-
+    context: buildContextSnapshot({ recentMessages, now: new Date() }),
     situation: {},
-
     relationship: {},
-
-    need: {
-      primary: 'companionship',
-    },
-
-    plan: {
-      questionBudget: 1,
-      followUpGap: 'none',
-    },
-
+    need: { primary: 'companionship' },
+    plan: { questionBudget: 1, followUpGap: 'none' },
     guardianTopic: fallbackGuardian.topic,
     systemPrompt: fallbackGuardian.prompt,
-    brainMode: 'guardian_fallback',
   };
 }
+
   const recentForModel = buildRecentMessagesForModel(brain.context);
   const lastRecent = recentForModel[recentForModel.length - 1];
   if (
@@ -388,8 +362,8 @@ try {
         model: DEEPSEEK_MODEL,
         messages: modelMessages,
         thinking: { type: 'disabled' },
-        temperature: Number(process.env.MOMO_TEMPERATURE || 0.82),
-        max_tokens: Number(process.env.MOMO_MAX_REPLY_TOKENS || 360),
+        temperature: Number(process.env.MOMO_TEMPERATURE || 0.88),
+        max_tokens: Number(process.env.MOMO_MAX_REPLY_TOKENS || 220),
         stream: false,
       },
       {
