@@ -4,6 +4,10 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { rateLimit } = require('express-rate-limit');
 const winston = require('winston');
+const {
+  acosAiUsageCaptureMiddleware,
+  acosRequestMetricsMiddleware,
+} = require('./services/acosMetrics');
 
 dotenv.config();
 
@@ -39,6 +43,11 @@ const logger = winston.createLogger({
 // =========================================================
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
+
+// ACOS: collect anonymous request volume, latency and error metrics.
+// This middleware never stores request bodies, chat text, tokens or API keys.
+app.use(acosAiUsageCaptureMiddleware);
+app.use(acosRequestMetricsMiddleware);
 
 // 每個請求完成後留下精簡紀錄。
 // 不記錄 body、Token、API Key 或個人內容，避免敏感資料進入 Render Logs。
@@ -185,6 +194,7 @@ const driftRoutes = require('./routes/drift');
 const { startEmailQueueWorker } = require('./services/capsuleDeliveryWorker');
 const voiceRoutes = require('./routes/voice');
 const emailVerificationCodeRoutes = require('./routes/emailVerificationCode');
+const adminAcosRoutes = require('./routes/adminAcos');
 console.log("✅ Voice route loaded");
 console.log("✅ Email verification code route loaded");
 
@@ -198,6 +208,7 @@ app.use('/capsule', capsuleLimiter, capsuleRoutes);
 app.use('/drift', driftLimiter, driftRoutes);
 app.use('/voice', chatLimiter, voiceRoutes);
 app.use('/auth/email-code', emailCodeLimiter, emailVerificationCodeRoutes);
+app.use('/admin/acos', adminAcosRoutes);
 console.log("✅ Voice route mounted");
 console.log("✅ Email verification code route mounted");
 
