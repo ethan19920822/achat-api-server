@@ -1,0 +1,281 @@
+const admin = require('firebase-admin');
+
+let firestore = null;
+
+function getAdminApp() {
+  if (admin.apps.length > 0) return admin.app();
+
+  const rawServiceAccount =
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+    process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (rawServiceAccount) {
+    const serviceAccount = JSON.parse(rawServiceAccount);
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
+    return admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
+    });
+  }
+
+  // Render / Google Cloud 使用 Application Default Credentials 時可直接啟動。
+  return admin.initializeApp({
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
+  });
+}
+
+function getFirestore() {
+  if (firestore) return firestore;
+  getAdminApp();
+  firestore = admin.firestore();
+  return firestore;
+}
+
+function shiftedDate(date = new Date()) {
+  // ACOS 以台灣營運日為預設；可用環境變數改時區偏移分鐘。
+  const offsetMinutes = Number(process.env.ACOS_TIMEZONE_OFFSET_MINUTES || 480);
+  return new Date(date.getTime() + offsetMinutes * 60 * 1000);
+}
+
+function dateKey(date = new Date()) {
+  return shiftedDate(date).toISOString().slice(0, 10);
+}
+
+const ensuredDailyDocs = new Map();
+
+async function dailyMetricsRef(key = dateKey()) {
+  if (!ensuredDailyDocs.has(key)) {
+    const ref = getFirestore().collection('acos_metrics_daily').doc(key);
+    const promise = ref
+      .set({
+        date: key,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true })
+      .then(() => ref)
+      .catch((error) => {
+        ensuredDailyDocs.delete(key);
+        throw error;
+      });
+    ensuredDailyDocs.set(key, promise);
+  }
+  return ensuredDailyDocs.get(key);
+}
+
+function safeKey(value) {
+  return String(value || 'unknown')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '_')
+    .slice(0, 60) || 'unknown';
+}
+
+function routeBucket(path) {
+  const value = String(path || '').toLowerCase();
+  if (value.startsWith('/chat')) return 'chat';
+  if (value.startsWith('/vision')) return 'vision';
+  if (value.startsWith('/transcribe')) return 'transcribe';
+  if (value.startsWith('/voice')) return 'voice';
+  if (value.startsWith('/capsule')) return 'capsule';
+  if (value.startsWith('/drift')) return 'drift';
+  if (value.startsWith('/auth')) return 'auth';
+  if (value.startsWith('/admin')) return 'admin';
+  return 'other';
+}
+
+function acosAiUsageCaptureMiddleware(req, res, next) {
+  const originalJson = res.json.bind(res);
+  res.json = (payload) => {
+    const usage = res.locals.acosAiUsage
+      || payload?.usage
+      || payload?.meta?.usage
+      || payload?.data?.usage;
+
+    if (usage && typeof usage === 'object') {
+      recordAiUsage({
+        provider: usage.provider || res.locals.acosProvider || 'unknown',
+        model: usage.model || res.locals.acosModel || 'unknown',
+        feature: usage.feature || routeBucket(req.path),
+        inputTokens: usage.inputTokens || usage.prompt_tokens || usage.promptTokens || 0,
+        outputTokens: usage.outputTokens || usage.completion_tokens || usage.completionTokens || 0,
+        costUsd: usage.costUsd || usage.cost || 0,
+        latencyMs: usage.latencyMs || 0,
+        success: usage.success !== false,
+      }).catch((error) => console.error('ACOS AI usage capture failed', error.message));
+    }
+
+    return originalJson(payload);
+  };
+  return next();
+}
+
+function acosRequestMetricsMiddleware(req, res, next) {
+  // Render health probes、ACOS 自己的輪詢與 usage 檢視不納入 App 使用量，
+  // 避免後台開著時把聊天量與 API 流量越看越高。
+  if (
+    req.path === '/health' ||
+    req.path === '/' ||
+    req.path.startsWith('/admin/acos') ||
+    req.path === '/chat/usage'
+  ) {
+    return next();
+  }
+
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    const durationMs = Date.now() - startedAt;
+    const bucket = routeBucket(req.path);
+    const statusGroup = res.statusCode >= 500
+      ? 'status5xx'
+      : res.statusCode >= 400
+        ? 'status4xx'
+        : 'status2xx';
+
+    const increment = admin.firestore.FieldValue.increment;
+    const fieldPath = admin.firestore.FieldPath;
+    const fields = [
+      'updatedAt', admin.firestore.FieldValue.serverTimestamp(),
+      'totalRequests', increment(1),
+      'totalLatencyMs', increment(durationMs),
+      statusGroup, increment(1),
+      new fieldPath('routes', bucket, 'requests'), increment(1),
+      new fieldPath('routes', bucket, 'latencyMs'), increment(durationMs),
+    ];
+
+    if (res.statusCode >= 400) {
+      fields.push(
+        'totalErrors', increment(1),
+        new fieldPath('routes', bucket, 'errors'), increment(1),
+      );
+    }
+    if (bucket === 'chat') fields.push('chatRequests', increment(1));
+    if (bucket === 'vision') fields.push('visionRequests', increment(1));
+    if (bucket === 'transcribe') fields.push('transcribeRequests', increment(1));
+    if (bucket === 'voice') fields.push('voiceRequests', increment(1));
+
+    if (res.statusCode >= 500) {
+      createAcosAlert({
+        severity: 'critical',
+        title: `API ${bucket} 發生 5xx`,
+        message: `${req.method} ${req.originalUrl} 回傳 ${res.statusCode}`,
+        source: 'render',
+        dedupeKey: `http_5xx_${bucket}`,
+      }).catch(() => {});
+    } else if (durationMs >= 5000) {
+      createAcosAlert({
+        severity: 'warning',
+        title: `API ${bucket} 延遲偏高`,
+        message: `${req.method} ${req.originalUrl} 花費 ${durationMs} ms`,
+        source: 'render',
+        dedupeKey: `latency_${bucket}`,
+      }).catch(() => {});
+    }
+
+    dailyMetricsRef()
+      .then((ref) => ref.update(...fields))
+      .catch((error) => {
+        // Metrics 失敗不可阻擋正式 API。
+        console.error('ACOS metrics write failed', error.message);
+      });
+  });
+
+  return next();
+}
+
+async function recordAiUsage({
+  provider,
+  model,
+  feature,
+  inputTokens = 0,
+  outputTokens = 0,
+  costUsd = 0,
+  latencyMs = 0,
+  success = true,
+}) {
+  const providerKey = safeKey(provider);
+  const modelKey = safeKey(model);
+  const featureKey = safeKey(feature);
+  const increment = admin.firestore.FieldValue.increment;
+  const fieldPath = admin.firestore.FieldPath;
+  const fields = [
+    'updatedAt', admin.firestore.FieldValue.serverTimestamp(),
+    'inputTokens', increment(Number(inputTokens) || 0),
+    'outputTokens', increment(Number(outputTokens) || 0),
+    'costUsd', increment(Number(costUsd) || 0),
+    'aiLatencyMs', increment(Number(latencyMs) || 0),
+    'aiRequests', increment(1),
+    new fieldPath('providers', providerKey, 'requests'), increment(1),
+    new fieldPath('providers', providerKey, 'costUsd'),
+      increment(Number(costUsd) || 0),
+    new fieldPath('providers', providerKey, 'latencyMs'),
+      increment(Number(latencyMs) || 0),
+    new fieldPath('providers', providerKey, 'lastModel'), modelKey,
+    new fieldPath('features', featureKey, 'requests'), increment(1),
+    new fieldPath('models', modelKey, 'requests'), increment(1),
+  ];
+
+  if (success) {
+    fields.push(
+      new fieldPath('providers', providerKey, 'lastSuccessAt'),
+      admin.firestore.FieldValue.serverTimestamp(),
+    );
+  } else {
+    fields.push(
+      'aiErrors', increment(1),
+      new fieldPath('providers', providerKey, 'errors'), increment(1),
+    );
+  }
+
+  const ref = await dailyMetricsRef();
+  await ref.update(...fields);
+}
+
+async function createAcosAlert({
+  severity = 'warning',
+  title,
+  message,
+  source = 'server',
+  dedupeKey,
+}) {
+  const db = getFirestore();
+  const id = dedupeKey
+    ? `${dateKey()}_${safeKey(dedupeKey)}`
+    : db.collection('acos_alerts').doc().id;
+  await db.collection('acos_alerts').doc(id).set({
+    severity,
+    title,
+    message,
+    source,
+    acknowledged: false,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
+
+async function addAcosTimeline({ title, detail, type = 'system' }) {
+  await getFirestore().collection('acos_timeline').add({
+    title,
+    detail,
+    type,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    source: 'server',
+  });
+}
+
+async function getTodayMetrics() {
+  const snapshot = await getFirestore()
+    .collection('acos_metrics_daily')
+    .doc(dateKey())
+    .get();
+  return snapshot.data() || {};
+}
+
+module.exports = {
+  acosAiUsageCaptureMiddleware,
+  acosRequestMetricsMiddleware,
+  recordAiUsage,
+  createAcosAlert,
+  addAcosTimeline,
+  getTodayMetrics,
+  getFirestore,
+  getAdminApp,
+};
