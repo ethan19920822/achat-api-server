@@ -1,0 +1,100 @@
+const express = require('express');
+const { requireAcosAdmin } = require('../middleware/requireAcosAdmin');
+const { getTodayMetrics, getFirestore } = require('../services/acosMetrics');
+
+const router = express.Router();
+
+function memorySnapshot() {
+  const value = process.memoryUsage();
+  return {
+    rssMb: Number((value.rss / 1024 / 1024).toFixed(1)),
+    heapUsedMb: Number((value.heapUsed / 1024 / 1024).toFixed(1)),
+    heapTotalMb: Number((value.heapTotal / 1024 / 1024).toFixed(1)),
+  };
+}
+
+router.use(requireAcosAdmin);
+
+router.get('/health', async (req, res) => {
+  try {
+    const metrics = await getTodayMetrics();
+    const providers = metrics.providers || {};
+    const providerStatus = {};
+
+    for (const [key, value] of Object.entries(providers)) {
+      providerStatus[key] = {
+        ok: Number(value?.errors || 0) < Number(value?.requests || 0) || Number(value?.requests || 0) === 0,
+        requests: Number(value?.requests || 0),
+        errors: Number(value?.errors || 0),
+        costUsd: Number(value?.costUsd || 0),
+        lastModel: value?.lastModel || '',
+      };
+    }
+
+    return res.json({
+      ok: true,
+      service: 'achat-api-server',
+      version: '2.0-acos',
+      uptimeSeconds: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      nodeVersion: process.version,
+      memory: memorySnapshot(),
+      delivery: {
+        resendConfigured: Boolean(process.env.RESEND_API_KEY),
+        firebaseConfigured: Boolean(
+          process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+          process.env.FIREBASE_SERVICE_ACCOUNT
+        ),
+        workerEnabled:
+          String(process.env.EMAIL_WORKER_ENABLED || 'true').toLowerCase() !== 'false',
+      },
+      admin: req.acosAdmin,
+      metrics,
+      providers: providerStatus,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'acos_health_failed',
+      message: error.message,
+    });
+  }
+});
+
+router.get('/summary', async (req, res) => {
+  try {
+    const db = getFirestore();
+    const collections = [
+      ['users', 'users'],
+      ['capsules', 'capsules'],
+      ['drift_posts', 'driftPosts'],
+      ['emotion_logs', 'emotionLogs'],
+      ['email_delivery_logs', 'emailLogs'],
+    ];
+
+    const values = await Promise.all(collections.map(async ([collection, key]) => {
+      // Launch 早期規模可直接 count。若 SDK 不支援 count，退回 select 查詢。
+      try {
+        const countSnapshot = await db.collection(collection).count().get();
+        return [key, countSnapshot.data().count || 0];
+      } catch (_) {
+        const snapshot = await db.collection(collection).select().get();
+        return [key, snapshot.size];
+      }
+    }));
+
+    return res.json({
+      ok: true,
+      counts: Object.fromEntries(values),
+      metrics: await getTodayMetrics(),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'acos_summary_failed',
+      message: error.message,
+    });
+  }
+});
+
+module.exports = router;
