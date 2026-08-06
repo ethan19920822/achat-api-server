@@ -6,6 +6,7 @@ const router = express.Router();
 const { getChatReply } = require('../services/core');
 const { getUsageSummary } = require('../services/aiUsageMonitor');
 const { directVoiceEvent } = require('../services/voiceDirector');
+const { requireAcosAdmin } = require('../middleware/requireAcosAdmin');
 
 const recentRequests = new Map();
 
@@ -40,7 +41,7 @@ function cleanupRecentRequests() {
   }
 }
 
-router.get('/usage', (req, res) => {
+router.get('/usage', requireAcosAdmin, (req, res) => {
   res.json(getUsageSummary());
 });
 
