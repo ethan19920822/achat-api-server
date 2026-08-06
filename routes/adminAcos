@@ -13,11 +13,175 @@ function memorySnapshot() {
   };
 }
 
+async function fetchJson(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_) {
+      data = { raw: text };
+    }
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getDeepSeekAccount() {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) {
+    return { configured: false, ok: false, message: 'DEEPSEEK_API_KEY 未設定' };
+  }
+  try {
+    const data = await fetchJson('https://api.deepseek.com/user/balance', {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+    });
+    const infos = Array.isArray(data.balance_infos) ? data.balance_infos : [];
+    const preferred = infos.find((item) => String(item.currency).toUpperCase() === 'USD') || infos[0] || {};
+    return {
+      configured: true,
+      ok: data.is_available === true,
+      isAvailable: data.is_available === true,
+      currency: preferred.currency || 'USD',
+      totalBalance: Number(preferred.total_balance || 0),
+      toppedUpBalance: Number(preferred.topped_up_balance || 0),
+      grantedBalance: Number(preferred.granted_balance || 0),
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      ok: false,
+      message: `DeepSeek balance ${error.message}`,
+      statusCode: error.status || null,
+    };
+  }
+}
+
+async function getElevenLabsAccount() {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) {
+    return { configured: false, ok: false, message: 'ELEVENLABS_API_KEY 未設定' };
+  }
+  try {
+    const data = await fetchJson('https://api.elevenlabs.io/v1/user/subscription', {
+      headers: { 'xi-api-key': apiKey, Accept: 'application/json' },
+    });
+    const used = Number(data.character_count || data.credit_count || 0);
+    const limit = Number(data.character_limit || data.credit_limit || 0);
+    const remaining = Math.max(0, limit - used);
+    const overage = Number(data.current_overage?.amount || 0);
+    const nextInvoiceCents = Number(data.next_invoice?.amount_due_cents || 0);
+    return {
+      configured: true,
+      ok: String(data.status || '').toLowerCase() === 'active',
+      status: data.status || 'unknown',
+      tier: data.tier || 'unknown',
+      usedCredits: used,
+      creditLimit: limit,
+      remainingCredits: remaining,
+      usageRate: limit > 0 ? used / limit : 0,
+      currentOverageUsd: overage,
+      nextInvoiceUsd: nextInvoiceCents / 100,
+      currency: data.currency || 'usd',
+      nextResetUnix: data.next_character_count_reset_unix || null,
+      hasOpenInvoices: data.has_open_invoices === true,
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      ok: false,
+      message: `ElevenLabs subscription ${error.message}`,
+      statusCode: error.status || null,
+    };
+  }
+}
+
+async function getEmailHealth() {
+  const db = getFirestore();
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  let docs = [];
+  try {
+    const snapshot = await db
+      .collection('email_delivery_logs')
+      .where('createdAt', '>=', since)
+      .limit(2000)
+      .get();
+    docs = snapshot.docs;
+  } catch (_) {
+    const snapshot = await db.collection('email_delivery_logs').limit(2000).get();
+    docs = snapshot.docs.filter((doc) => {
+      const value = doc.data()?.createdAt;
+      const date = value?.toDate ? value.toDate() : new Date(value || 0);
+      return date >= since;
+    });
+  }
+
+  const byCapsule = new Map();
+  let lastSuccessAt = null;
+  let lastFailureAt = null;
+  let latestError = '';
+  for (const doc of docs) {
+    const d = doc.data() || {};
+    const key = String(d.capsuleId || d.capsuleIdRef || d.recipientEmail || doc.id);
+    const status = String(d.status || '').toLowerCase();
+    const createdAtValue = d.createdAt;
+    const createdAt = createdAtValue?.toDate ? createdAtValue.toDate() : new Date(createdAtValue || 0);
+    const previous = byCapsule.get(key);
+    if (!previous || createdAt > previous.createdAt) {
+      byCapsule.set(key, { status, createdAt, error: String(d.error || '') });
+    }
+  }
+
+  let success = 0;
+  let failed = 0;
+  for (const item of byCapsule.values()) {
+    if (item.status.includes('success') || item.status.includes('sent') || item.status.includes('delivered')) {
+      success += 1;
+      if (!lastSuccessAt || item.createdAt > lastSuccessAt) lastSuccessAt = item.createdAt;
+    } else if (item.status.includes('fail') || item.status.includes('error')) {
+      failed += 1;
+      if (!lastFailureAt || item.createdAt > lastFailureAt) {
+        lastFailureAt = item.createdAt;
+        latestError = item.error;
+      }
+    }
+  }
+  const total = success + failed;
+  return {
+    configured: Boolean(process.env.RESEND_API_KEY || process.env.AUTH_FROM_EMAIL || process.env.CAPSULE_FROM_EMAIL),
+    workerEnabled: String(process.env.EMAIL_WORKER_ENABLED || 'true').toLowerCase() !== 'false',
+    uniqueAttempts24h: total,
+    uniqueSuccess24h: success,
+    uniqueFailed24h: failed,
+    successRate24h: total > 0 ? success / total : null,
+    lastSuccessAt: lastSuccessAt ? lastSuccessAt.toISOString() : null,
+    lastFailureAt: lastFailureAt ? lastFailureAt.toISOString() : null,
+    latestError,
+  };
+}
+
 router.use(requireAcosAdmin);
 
 router.get('/health', async (req, res) => {
   try {
-    const metrics = await getTodayMetrics();
+    const [metrics, deepseek, elevenlabs, emailHealth] = await Promise.all([
+      getTodayMetrics(),
+      getDeepSeekAccount(),
+      getElevenLabsAccount(),
+      getEmailHealth(),
+    ]);
     const providers = metrics.providers || {};
     const providerStatus = {};
 
@@ -31,10 +195,13 @@ router.get('/health', async (req, res) => {
       };
     }
 
+    providerStatus.deepseek = { ...(providerStatus.deepseek || {}), ok: deepseek.ok, configured: deepseek.configured };
+    providerStatus.elevenlabs = { ...(providerStatus.elevenlabs || {}), ok: elevenlabs.ok, configured: elevenlabs.configured };
+
     return res.json({
       ok: true,
       service: 'achat-api-server',
-      version: '2.0-acos',
+      version: '2.1-acos-provider-billing',
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV || 'development',
@@ -42,22 +209,25 @@ router.get('/health', async (req, res) => {
       memory: memorySnapshot(),
       delivery: {
         resendConfigured: Boolean(process.env.RESEND_API_KEY),
-        firebaseConfigured: Boolean(
-          process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
-          process.env.FIREBASE_SERVICE_ACCOUNT
-        ),
-        workerEnabled:
-          String(process.env.EMAIL_WORKER_ENABLED || 'true').toLowerCase() !== 'false',
+        firebaseConfigured: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT),
+        workerEnabled: String(process.env.EMAIL_WORKER_ENABLED || 'true').toLowerCase() !== 'false',
+        health: emailHealth,
+      },
+      accounts: {
+        deepseek,
+        elevenlabs,
+        openai: {
+          configured: Boolean(process.env.OPENAI_API_KEY),
+          trackedCostTodayUsd: Number(providers.openai?.costUsd || 0),
+          note: 'OpenAI 公開 API 不提供一般專案金鑰的即時預付餘額；此處顯示 ACOS 追蹤用量。',
+        },
       },
       admin: req.acosAdmin,
       metrics,
       providers: providerStatus,
     });
   } catch (error) {
-    return res.status(500).json({
-      error: 'acos_health_failed',
-      message: error.message,
-    });
+    return res.status(500).json({ error: 'acos_health_failed', message: error.message });
   }
 });
 
@@ -73,7 +243,6 @@ router.get('/summary', async (req, res) => {
     ];
 
     const values = await Promise.all(collections.map(async ([collection, key]) => {
-      // Launch 早期規模可直接 count。若 SDK 不支援 count，退回 select 查詢。
       try {
         const countSnapshot = await db.collection(collection).count().get();
         return [key, countSnapshot.data().count || 0];
@@ -90,10 +259,7 @@ router.get('/summary', async (req, res) => {
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    return res.status(500).json({
-      error: 'acos_summary_failed',
-      message: error.message,
-    });
+    return res.status(500).json({ error: 'acos_summary_failed', message: error.message });
   }
 });
 
