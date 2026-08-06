@@ -9,14 +9,48 @@ const CHAT_FLASH_MODEL = 'deepseek-v4-flash';
 
 const usageDir = path.join('/tmp', 'akasha-ai-usage');
 
+let recordAcosAiUsage = null;
+try {
+  ({ recordAiUsage: recordAcosAiUsage } = require('./acosMetrics'));
+} catch (error) {
+  console.warn('[ACOS_AI_USAGE] acosMetrics unavailable:', error.message);
+}
+
+function providerFromModel(model) {
+  const value = String(model || '').toLowerCase();
+  if (value.includes('deepseek')) return 'deepseek';
+  if (value.includes('gpt') || value.includes('openai')) return 'openai';
+  if (value.includes('deepgram')) return 'deepgram';
+  if (value.includes('eleven')) return 'elevenlabs';
+  return 'unknown';
+}
+
+function estimateCostUsd({ model, promptTokens, completionTokens }) {
+  const provider = providerFromModel(model);
+  const prefix = provider.toUpperCase();
+  const inputPerMillion = Number(
+    process.env[`${prefix}_INPUT_USD_PER_1M`] || 0
+  );
+  const outputPerMillion = Number(
+    process.env[`${prefix}_OUTPUT_USD_PER_1M`] || 0
+  );
+  return (Number(promptTokens || 0) / 1000000) * inputPerMillion +
+    (Number(completionTokens || 0) / 1000000) * outputPerMillion;
+}
+
 function ensureDir() {
   if (!fs.existsSync(usageDir)) {
     fs.mkdirSync(usageDir, { recursive: true });
   }
 }
 
+function shiftedNow() {
+  const offsetMinutes = Number(process.env.ACOS_TIMEZONE_OFFSET_MINUTES || 480);
+  return new Date(Date.now() + offsetMinutes * 60 * 1000);
+}
+
 function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  return shiftedNow().toISOString().slice(0, 10);
 }
 
 function usageFilePath() {
@@ -25,8 +59,7 @@ function usageFilePath() {
 }
 
 function nowHourKey() {
-  const now = new Date();
-  return now.toISOString().slice(0, 13);
+  return shiftedNow().toISOString().slice(0, 13);
 }
 
 function readUsage() {
@@ -214,6 +247,21 @@ function recordAIUsage({
   }
 
   writeUsage(usage);
+
+  if (typeof recordAcosAiUsage === 'function') {
+    recordAcosAiUsage({
+      provider: providerFromModel(model),
+      model,
+      feature: String(route || 'unknown').replace(/^\//, '') || 'unknown',
+      inputTokens: Number(promptTokens || 0),
+      outputTokens: Number(completionTokens || 0),
+      costUsd: estimateCostUsd({ model, promptTokens, completionTokens }),
+      latencyMs: Number(latencyMs || 0),
+      success,
+    }).catch((error) => {
+      console.error('[ACOS_AI_USAGE] Firestore write failed:', error.message);
+    });
+  }
 
   console.log('[AI_USAGE]', {
     userId: userId || 'anonymous',
