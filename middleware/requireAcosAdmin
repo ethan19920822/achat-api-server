@@ -1,0 +1,50 @@
+const { getAdminApp, getFirestore } = require('../services/acosMetrics');
+
+async function requireAcosAdmin(req, res, next) {
+  try {
+    const authorization = req.get('authorization') || '';
+    const match = authorization.match(/^Bearer\s+(.+)$/i);
+    if (!match) {
+      return res.status(401).json({
+        error: 'missing_admin_token',
+        message: 'Missing Firebase ID token.',
+      });
+    }
+
+    const decoded = await getAdminApp().auth().verifyIdToken(match[1]);
+    if (decoded.email_verified !== true) {
+      return res.status(403).json({
+        error: 'verified_email_required',
+        message: 'Verified admin email required.',
+      });
+    }
+    const adminDoc = await getFirestore().collection('admins').doc(decoded.uid).get();
+    const adminProfile = adminDoc.data() || {};
+    const role = String(adminProfile.role || '').trim().toLowerCase();
+    const allowed = adminProfile.active === true && (role === 'owner' || role === 'admin');
+
+    if (!allowed) {
+      return res.status(403).json({
+        error: 'admin_required',
+        message: 'ACOS admin permission required.',
+      });
+    }
+
+    req.acosAdmin = {
+      uid: decoded.uid,
+      email: decoded.email || '',
+      role,
+      permissions: Array.isArray(adminProfile.permissions)
+        ? adminProfile.permissions
+        : [],
+    };
+    return next();
+  } catch (error) {
+    return res.status(401).json({
+      error: 'invalid_admin_token',
+      message: error.message,
+    });
+  }
+}
+
+module.exports = { requireAcosAdmin };
