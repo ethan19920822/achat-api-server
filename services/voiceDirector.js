@@ -79,6 +79,8 @@ function isMemberTier(tier) {
     'plus',
     'vip',
     'paid',
+    'founder',
+    'founding_member',
   ].includes(tier);
 }
 
@@ -175,17 +177,35 @@ async function directVoiceEvent({
 
   const db = ensureFirebaseAdmin();
   const ref = db.collection('users').doc(String(userId));
+  const adminRef = db.collection('admins').doc(String(userId));
   const now = new Date();
 
   let decision = null;
 
   await db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(ref);
+    const adminSnapshot = await transaction.get(adminRef);
     const data = snapshot.data() || {};
+    const adminData = adminSnapshot.data() || {};
+    const adminRole = String(adminData.role || '').trim().toLowerCase();
+    const internalUnlimited =
+      adminSnapshot.exists &&
+      adminData.active === true &&
+      (adminRole === 'owner' || adminRole === 'admin');
 
-    const tier = normalizeTier(data);
-    const isMember = isMemberTier(tier);
-    const balances = applyWeeklyRefill(data, now, isMember);
+    const tier = internalUnlimited ? 'premium' : normalizeTier(data);
+    const isMember = internalUnlimited || isMemberTier(tier);
+    const balances = internalUnlimited
+      ? {
+          opportunityBalance: 999999,
+          opportunityMax: 999999,
+          opportunityGrant: 999999,
+          playbackBalance: 999999,
+          playbackMax: 999999,
+          playbackGrant: 999999,
+          elapsedWeeks: 0,
+        }
+      : applyWeeklyRefill(data, now, isMember);
 
     const state = String(data.voiceState || 'idle');
     let followUpRemaining = numberValue(
@@ -204,6 +224,13 @@ async function directVoiceEvent({
       lastConversationAt: admin.firestore.FieldValue.serverTimestamp(),
       voiceUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
       voiceSchemaVersion: 1,
+      ...(internalUnlimited
+        ? {
+            internalAccess: true,
+            internalUnlimited: true,
+            adminRole,
+          }
+        : {}),
     };
 
     if (balances.elapsedWeeks > 0) {
@@ -237,16 +264,17 @@ async function directVoiceEvent({
       if (
         !candidate.unsafe &&
         candidate.score >= FOLLOW_UP_SCORE_MIN &&
-        balances.opportunityBalance > 0 &&
-        (!isMember || balances.playbackBalance > 0)
+        (internalUnlimited || balances.opportunityBalance > 0) &&
+        (internalUnlimited || !isMember || balances.playbackBalance > 0)
       ) {
-        const nextOpportunity = Math.max(
-          0,
-          balances.opportunityBalance - 1,
-        );
-        const nextPlayback = isMember
-          ? Math.max(0, balances.playbackBalance - 1)
-          : balances.playbackBalance;
+        const nextOpportunity = internalUnlimited
+          ? balances.opportunityBalance
+          : Math.max(0, balances.opportunityBalance - 1);
+        const nextPlayback = internalUnlimited
+          ? balances.playbackBalance
+          : isMember
+            ? Math.max(0, balances.playbackBalance - 1)
+            : balances.playbackBalance;
 
         transaction.set(
           ref,
@@ -271,6 +299,7 @@ async function directVoiceEvent({
           phase: 'follow_up',
           locked: !isMember,
           member: isMember,
+          internalUnlimited,
           candidateScore: candidate.score,
           category: candidate.category,
           reason: 'follow_up_approved',
@@ -307,6 +336,7 @@ async function directVoiceEvent({
     }
 
     if (
+      !internalUnlimited &&
       hoursSince(data.lastVoiceAt, now) < COOLDOWN_HOURS
     ) {
       transaction.set(ref, baseUpdate, { merge: true });
@@ -314,7 +344,7 @@ async function directVoiceEvent({
       return;
     }
 
-    if (balances.opportunityBalance <= 0) {
+    if (!internalUnlimited && balances.opportunityBalance <= 0) {
       transaction.set(ref, baseUpdate, { merge: true });
       decision = emptyVoiceEvent(
         'opportunity_budget_empty',
@@ -323,7 +353,7 @@ async function directVoiceEvent({
       return;
     }
 
-    if (isMember && balances.playbackBalance <= 0) {
+    if (!internalUnlimited && isMember && balances.playbackBalance <= 0) {
       transaction.set(ref, baseUpdate, { merge: true });
       decision = emptyVoiceEvent(
         'playback_budget_empty',
@@ -332,13 +362,14 @@ async function directVoiceEvent({
       return;
     }
 
-    const nextOpportunity = Math.max(
-      0,
-      balances.opportunityBalance - 1,
-    );
-    const nextPlayback = isMember
-      ? Math.max(0, balances.playbackBalance - 1)
-      : balances.playbackBalance;
+    const nextOpportunity = internalUnlimited
+      ? balances.opportunityBalance
+      : Math.max(0, balances.opportunityBalance - 1);
+    const nextPlayback = internalUnlimited
+      ? balances.playbackBalance
+      : isMember
+        ? Math.max(0, balances.playbackBalance - 1)
+        : balances.playbackBalance;
 
     // A first Whisper may have a follow-up after 1 or 2 user turns.
     const followUpTurns = Math.random() < 0.55 ? 1 : 2;
@@ -365,6 +396,7 @@ async function directVoiceEvent({
       phase: 'first',
       locked: !isMember,
       member: isMember,
+      internalUnlimited,
       candidateScore: candidate.score,
       category: candidate.category,
       reason: 'first_whisper_approved',
